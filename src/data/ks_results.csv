@@ -1,0 +1,3 @@
+Evento,Carburante,n_pre,n_post,KS_stat,p_value,H0
+Ucraina (Feb 2022),Benzina,25,27,0.9259,0.0,RIFIUTATA
+Ucraina (Feb 2022),Diesel,25,27,0.9259,0.0,RIFIUTATA

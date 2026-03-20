@@ -1,0 +1,5 @@
+Evento,Carburante,Break_date,F_stat,p_value,H0
+Ucraina (Feb 2022),Benzina,2022-02-24,17.5352,2e-06,RIFIUTATA
+Ucraina (Feb 2022),Diesel,2022-02-24,19.5673,1e-06,RIFIUTATA
+Hormuz (Feb 2026),Benzina,2026-02-28,1.213,0.314221,non rifiutata
+Hormuz (Feb 2026),Diesel,2026-02-28,3.6289,0.041334,RIFIUTATA

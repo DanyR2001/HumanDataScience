@@ -1,0 +1,9 @@
+yfinance
+ruptures
+statsmodels
+pandas
+numpy
+matplotlib
+seaborn
+scipy
+requests
