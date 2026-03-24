@@ -1,5 +1,7 @@
-Evento,Carburante,τ_crude,τ_retail,D (giorni),H₀ (≥30gg)
-Ucraina (Feb 2022),Benzina,2022-02-14,2022-03-21,35,non rifiutata
-Ucraina (Feb 2022),Diesel,2022-02-14,2022-03-21,35,non rifiutata
-Hormuz (Feb 2026),Benzina,2026-02-16,2026-01-12,-35,RIFIUTATA
-Hormuz (Feb 2026),Diesel,2026-02-16,2026-02-16,0,RIFIUTATA
+Evento,Carburante,tau_crude,tau_retail,D (gg),H0
+Ucraina (Feb 2022),Benzina,2022-02-21,2022-03-28,35,non rifiutata
+Ucraina (Feb 2022),Diesel,2022-02-21,2022-03-28,35,non rifiutata
+Iran-Israele (Giu 2025),Benzina,2025-04-14,2025-05-19,35,non rifiutata
+Iran-Israele (Giu 2025),Diesel,2025-04-14,2025-05-19,35,non rifiutata
+Hormuz (Feb 2026),Benzina,2026-02-23,2025-11-10,-105,RIFIUTATA
+Hormuz (Feb 2026),Diesel,2026-02-23,2025-11-10,-105,RIFIUTATA

@@ -309,22 +309,22 @@
 ><span class="ecl-button__container"><span 
   class="wt-icon--corner-arrow ecl-icon ecl-icon--s ecl-icon--rotate-90 ecl-button__icon ecl-icon--corner-arrow"
   aria-hidden="true"
-   data-ecl-icon></span><span class="ecl-button__label" data-ecl-label="true">Next items</span></span></button><ul class="ecl-menu__list" data-ecl-menu-list><li class="ecl-menu__item" data-ecl-menu-item id="ecl-menu-item-ecl-menu-1114641789-0"><a
+   data-ecl-icon></span><span class="ecl-button__label" data-ecl-label="true">Next items</span></span></button><ul class="ecl-menu__list" data-ecl-menu-list><li class="ecl-menu__item" data-ecl-menu-item id="ecl-menu-item-ecl-menu-1823729087-0"><a
   href="/index_en"
   class="ecl-link ecl-link--standalone ecl-menu__link"
-   data-untranslated-label="Home" data-active-path="&#x2F;" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1114641789-0-link"
->Home</a></li><li class="ecl-menu__item" data-ecl-menu-item id="ecl-menu-item-ecl-menu-1114641789-1"><a
+   data-untranslated-label="Home" data-active-path="&#x2F;" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1823729087-0-link"
+>Home</a></li><li class="ecl-menu__item" data-ecl-menu-item id="ecl-menu-item-ecl-menu-1823729087-1"><a
   href="/topics_en"
   class="ecl-link ecl-link--standalone ecl-menu__link"
-   data-untranslated-label="Topics" data-active-path="&#x2F;node&#x2F;6486" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1114641789-1-link"
->Topics</a></li><li class="ecl-menu__item ecl-menu__item--has-children" data-ecl-menu-item data-ecl-has-children aria-haspopup aria-expanded="false" id="ecl-menu-item-ecl-menu-1114641789-2"><a
+   data-untranslated-label="Topics" data-active-path="&#x2F;node&#x2F;6486" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1823729087-1-link"
+>Topics</a></li><li class="ecl-menu__item ecl-menu__item--has-children" data-ecl-menu-item data-ecl-has-children aria-haspopup aria-expanded="false" id="ecl-menu-item-ecl-menu-1823729087-2"><a
   href="/strategy_en"
   class="ecl-link ecl-link--standalone ecl-menu__link"
-   data-untranslated-label="Strategy" data-active-path="&#x2F;node&#x2F;6526" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1114641789-2-link"
+   data-untranslated-label="Strategy" data-active-path="&#x2F;node&#x2F;6526" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1823729087-2-link"
 >Strategy</a><button
   class="ecl-button ecl-button--tertiary ecl-button--m ecl-button--neutral ecl-menu__button-caret"
   type="button"
-   data-ecl-menu-caret aria-label="Access&#x20;item&#x27;s&#x20;children" aria-describedby="ecl-menu-item-ecl-menu-1114641789-2-link" aria-expanded="false"
+   data-ecl-menu-caret aria-label="Access&#x20;item&#x27;s&#x20;children" aria-describedby="ecl-menu-item-ecl-menu-1823729087-2-link" aria-expanded="false"
 ><span class="ecl-button__container"><span 
   class="wt-icon--corner-arrow ecl-icon ecl-icon--xs ecl-icon--rotate-180 ecl-button__icon ecl-icon--corner-arrow"
   aria-hidden="true"
@@ -381,14 +381,14 @@
       class="ecl-link__label">See all</span><span 
   class="wt-icon--arrow-left ecl-icon ecl-icon--xs ecl-icon--rotate-180 ecl-link__icon ecl-icon--arrow-left"
   aria-hidden="true"
-  ></span></a></li></ul></div></li><li class="ecl-menu__item ecl-menu__item--has-children" data-ecl-menu-item data-ecl-has-children aria-haspopup aria-expanded="false" id="ecl-menu-item-ecl-menu-1114641789-3"><a
+  ></span></a></li></ul></div></li><li class="ecl-menu__item ecl-menu__item--has-children" data-ecl-menu-item data-ecl-has-children aria-haspopup aria-expanded="false" id="ecl-menu-item-ecl-menu-1823729087-3"><a
   href="/data-and-analysis_en"
   class="ecl-link ecl-link--standalone ecl-menu__link"
-   data-untranslated-label="Data&#x20;and&#x20;analysis" data-active-path="&#x2F;node&#x2F;6525" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1114641789-3-link"
+   data-untranslated-label="Data&#x20;and&#x20;analysis" data-active-path="&#x2F;node&#x2F;6525" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1823729087-3-link"
 >Data and analysis</a><button
   class="ecl-button ecl-button--tertiary ecl-button--m ecl-button--neutral ecl-menu__button-caret"
   type="button"
-   data-ecl-menu-caret aria-label="Access&#x20;item&#x27;s&#x20;children" aria-describedby="ecl-menu-item-ecl-menu-1114641789-3-link" aria-expanded="false"
+   data-ecl-menu-caret aria-label="Access&#x20;item&#x27;s&#x20;children" aria-describedby="ecl-menu-item-ecl-menu-1823729087-3-link" aria-expanded="false"
 ><span class="ecl-button__container"><span 
   class="wt-icon--corner-arrow ecl-icon ecl-icon--xs ecl-icon--rotate-180 ecl-button__icon ecl-icon--corner-arrow"
   aria-hidden="true"
@@ -452,14 +452,14 @@
       class="ecl-link__label">See all</span><span 
   class="wt-icon--arrow-left ecl-icon ecl-icon--xs ecl-icon--rotate-180 ecl-link__icon ecl-icon--arrow-left"
   aria-hidden="true"
-  ></span></a></li></ul></div></li><li class="ecl-menu__item ecl-menu__item--has-children" data-ecl-menu-item data-ecl-has-children aria-haspopup aria-expanded="false" id="ecl-menu-item-ecl-menu-1114641789-4"><a
+  ></span></a></li></ul></div></li><li class="ecl-menu__item ecl-menu__item--has-children" data-ecl-menu-item data-ecl-has-children aria-haspopup aria-expanded="false" id="ecl-menu-item-ecl-menu-1823729087-4"><a
   href="/energy-explained_en"
   class="ecl-link ecl-link--standalone ecl-menu__link"
-   data-untranslated-label="Energy&#x20;explained" data-active-path="&#x2F;node&#x2F;4704" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1114641789-4-link"
+   data-untranslated-label="Energy&#x20;explained" data-active-path="&#x2F;node&#x2F;4704" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1823729087-4-link"
 >Energy explained</a><button
   class="ecl-button ecl-button--tertiary ecl-button--m ecl-button--neutral ecl-menu__button-caret"
   type="button"
-   data-ecl-menu-caret aria-label="Access&#x20;item&#x27;s&#x20;children" aria-describedby="ecl-menu-item-ecl-menu-1114641789-4-link" aria-expanded="false"
+   data-ecl-menu-caret aria-label="Access&#x20;item&#x27;s&#x20;children" aria-describedby="ecl-menu-item-ecl-menu-1823729087-4-link" aria-expanded="false"
 ><span class="ecl-button__container"><span 
   class="wt-icon--corner-arrow ecl-icon ecl-icon--xs ecl-icon--rotate-180 ecl-button__icon ecl-icon--corner-arrow"
   aria-hidden="true"
@@ -516,14 +516,14 @@
       class="ecl-link__label">See all</span><span 
   class="wt-icon--arrow-left ecl-icon ecl-icon--xs ecl-icon--rotate-180 ecl-link__icon ecl-icon--arrow-left"
   aria-hidden="true"
-  ></span></a></li></ul></div></li><li class="ecl-menu__item ecl-menu__item--has-children" data-ecl-menu-item data-ecl-has-children aria-haspopup aria-expanded="false" id="ecl-menu-item-ecl-menu-1114641789-5"><a
+  ></span></a></li></ul></div></li><li class="ecl-menu__item ecl-menu__item--has-children" data-ecl-menu-item data-ecl-has-children aria-haspopup aria-expanded="false" id="ecl-menu-item-ecl-menu-1823729087-5"><a
   href="/resources_en"
   class="ecl-link ecl-link--standalone ecl-menu__link"
-   data-untranslated-label="Resources" data-active-path="&#x2F;node&#x2F;6977" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1114641789-5-link"
+   data-untranslated-label="Resources" data-active-path="&#x2F;node&#x2F;6977" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1823729087-5-link"
 >Resources</a><button
   class="ecl-button ecl-button--tertiary ecl-button--m ecl-button--neutral ecl-menu__button-caret"
   type="button"
-   data-ecl-menu-caret aria-label="Access&#x20;item&#x27;s&#x20;children" aria-describedby="ecl-menu-item-ecl-menu-1114641789-5-link" aria-expanded="false"
+   data-ecl-menu-caret aria-label="Access&#x20;item&#x27;s&#x20;children" aria-describedby="ecl-menu-item-ecl-menu-1823729087-5-link" aria-expanded="false"
 ><span class="ecl-button__container"><span 
   class="wt-icon--corner-arrow ecl-icon ecl-icon--xs ecl-icon--rotate-180 ecl-button__icon ecl-icon--corner-arrow"
   aria-hidden="true"
@@ -566,14 +566,14 @@
       class="ecl-link__label">See all</span><span 
   class="wt-icon--arrow-left ecl-icon ecl-icon--xs ecl-icon--rotate-180 ecl-link__icon ecl-icon--arrow-left"
   aria-hidden="true"
-  ></span></a></li></ul></div></li><li class="ecl-menu__item" data-ecl-menu-item id="ecl-menu-item-ecl-menu-1114641789-6"><a
+  ></span></a></li></ul></div></li><li class="ecl-menu__item" data-ecl-menu-item id="ecl-menu-item-ecl-menu-1823729087-6"><a
   href="/events_en"
   class="ecl-link ecl-link--standalone ecl-menu__link"
-   data-untranslated-label="Events" data-active-path="&#x2F;node&#x2F;4" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1114641789-6-link"
->Events</a></li><li class="ecl-menu__item" data-ecl-menu-item id="ecl-menu-item-ecl-menu-1114641789-7"><a
+   data-untranslated-label="Events" data-active-path="&#x2F;node&#x2F;4" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1823729087-6-link"
+>Events</a></li><li class="ecl-menu__item" data-ecl-menu-item id="ecl-menu-item-ecl-menu-1823729087-7"><a
   href="/news_en"
   class="ecl-link ecl-link--standalone ecl-menu__link"
-   data-untranslated-label="News" data-active-path="&#x2F;node&#x2F;2" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1114641789-7-link"
+   data-untranslated-label="News" data-active-path="&#x2F;node&#x2F;2" data-ecl-menu-link id="ecl-menu-item-ecl-menu-1823729087-7-link"
 >News</a></li></ul></section></div></nav>
 
 </div>

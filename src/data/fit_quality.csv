@@ -1,5 +1,5 @@
 Evento,Carburante,RMSE_semplice,MAE_semplice,RMSE_piecewise,MAE_piecewise,Miglioramento_%
-Ucraina (Feb 2022),Benzina,0.062246,0.052689,0.047246,0.030422,24.1
-Ucraina (Feb 2022),Diesel,0.073106,0.062138,0.054241,0.034036,25.8
-Hormuz (Feb 2026),Benzina,0.003627,0.002844,0.003462,0.002762,4.5
-Hormuz (Feb 2026),Diesel,0.002744,0.002349,0.002416,0.001914,11.9
+Ucraina (Feb 2022),Benzina,0.064418,0.054919,0.039452,0.022672,38.8
+Ucraina (Feb 2022),Diesel,0.077346,0.06559,0.047801,0.027568,38.2
+Hormuz (Feb 2026),Benzina,0.027282,0.023278,0.021116,0.017379,22.6
+Hormuz (Feb 2026),Diesel,0.032272,0.026804,0.024456,0.020506,24.2

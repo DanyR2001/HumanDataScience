@@ -1,5 +1,5 @@
 Evento,Carburante,Lag_mean,CI_95_low,CI_95_high,H0 (CI < 30gg)
-Ucraina (Feb 2022),Benzina,8.8,-140.0,175.0,non rifiutata
-Ucraina (Feb 2022),Diesel,10.5,-140.0,175.0,non rifiutata
-Hormuz (Feb 2026),Benzina,-68.3,-140.0,0.0,RIFIUTATA
-Hormuz (Feb 2026),Diesel,-70.5,-140.0,0.0,RIFIUTATA
+Ucraina (Feb 2022),Benzina,7.8,-140.0,175.0,non rifiutata
+Ucraina (Feb 2022),Diesel,9.2,-140.0,175.0,non rifiutata
+Hormuz (Feb 2026),Benzina,-70.1,-140.0,0.0,RIFIUTATA
+Hormuz (Feb 2026),Diesel,-71.5,-140.0,0.0,RIFIUTATA

@@ -1,13 +1,8 @@
 """
 02_changepoint_detection.py
 ============================
-Per ogni evento di guerra:
-  1. Estrai finestra temporale [-60gg, +90gg] dallo shock
-  2. Applica changepoint detection (ruptures PELT + Bayesian)
-  3. Calcola τ_crude e τ_retail
-  4. Calcola D = τ_retail - τ_crude
-  5. Test: D << 30 giorni? → rifiuto H₀
-  6. Calcola pendenze b1, b2 e doubling time (come nel paper)
+Bayesian piecewise linear regression per i tre eventi di guerra.
+Plot paper-quality: un grafico per evento per serie.
 """
 
 import pandas as pd
@@ -19,294 +14,179 @@ from scipy import stats
 import warnings
 warnings.filterwarnings("ignore")
 
-# ─────────────────────────────────────────
-# Carica dati
-# ─────────────────────────────────────────
 merged = pd.read_csv("data/dataset_merged.csv", index_col=0, parse_dates=True)
-print(f"Dataset caricato: {len(merged)} settimane")
+print(f"Dataset: {len(merged)} settimane\n")
 
-# ─────────────────────────────────────────
-# Definizione eventi di guerra
-# ─────────────────────────────────────────
 EVENTS = {
     "Ucraina (Feb 2022)": {
-        "shock_date": "2022-02-24",
-        "window_start": "2021-11-01",   # 4 mesi prima
-        "window_end":   "2022-06-30",   # 4 mesi dopo
+        "shock_date":   "2022-02-24",
+        "window_start": "2021-10-01",
+        "window_end":   "2022-07-31",
         "color":        "#e74c3c",
     },
+    "Iran-Israele (Giu 2025)": {
+        "shock_date":   "2025-06-13",
+        "window_start": "2025-02-01",
+        "window_end":   "2025-10-31",
+        "color":        "#e67e22",
+    },
     "Hormuz (Feb 2026)": {
-        "shock_date": "2026-02-28",
-        "window_start": "2025-11-01",
-        "window_end":   "2026-03-17",   # fine dataset
+        "shock_date":   "2026-02-28",
+        "window_start": "2025-10-01",
+        "window_end":   "2026-03-17",
         "color":        "#8e44ad",
     },
 }
 
-H0_THRESHOLD = 30  # giorni — soglia fisica della supply chain
+H0_THRESHOLD = 30
+DPI          = 180
+FIGSIZE      = (12, 5)
 
-
-# ─────────────────────────────────────────
-# Funzione: regressione piecewise lineare
-# ─────────────────────────────────────────
-def fit_piecewise(x: np.ndarray, y: np.ndarray, breakpoint_idx: int):
-    """
-    Fitta due rette prima e dopo il changepoint.
-    Restituisce: (b1, b2, a1, r2_before, r2_after)
-    """
-    idx = breakpoint_idx
-
-    # Prima del changepoint
-    x1, y1 = x[:idx], y[:idx]
-    # Dopo il changepoint
-    x2, y2 = x[idx:], y[idx:]
-
+def fit_piecewise(x, y, cp_idx):
     def linreg(xv, yv):
-        if len(xv) < 2:
-            return 0.0, 0.0, 0.0
-        slope, intercept, r, *_ = stats.linregress(xv, yv)
-        return slope, intercept, r**2
-
-    b1, a1, r2_1 = linreg(x1, y1)
-    b2, a2, r2_2 = linreg(x2, y2)
+        if len(xv) < 2: return 0., 0., 0.
+        s, i, r, *_ = stats.linregress(xv, yv)
+        return s, i, r**2
+    b1, a1, r2_1 = linreg(x[:cp_idx], y[:cp_idx])
+    b2, a2, r2_2 = linreg(x[cp_idx:], y[cp_idx:])
     return b1, b2, a1, r2_1, r2_2
 
+def doubling_time(slope):
+    return np.log(2) / slope if slope > 0 else np.inf
 
-def doubling_time(slope: float) -> float:
-    """
-    Giorni necessari per raddoppiare i casi.
-    DT = ln(2) / slope (in unità di tempo usate nell'asse x)
-    Restituisce inf se slope <= 0
-    """
-    if slope <= 0:
-        return np.inf
-    return np.log(2) / slope
-
-
-# ─────────────────────────────────────────
-# Funzione principale di analisi per evento
-# ─────────────────────────────────────────
-def analyze_event(event_name: str, cfg: dict, series_name: str, log_col: str):
-    """
-    Applica changepoint detection su una finestra temporale.
-    serie_name: es. "Brent" o "Benzina"
-    log_col: nome colonna log nel dataframe
-    """
-    df = merged.loc[cfg["window_start"]:cfg["window_end"], log_col].dropna()
-    if len(df) < 8:
-        print(f"     Dati insufficienti per {series_name} in {event_name}")
-        return None
-
-    signal = df.values.reshape(-1, 1)
-    x_idx  = np.arange(len(df))
-
-    # Changepoint detection con algoritmo PELT (Pruned Exact Linear Time)
-    # Penalità BIC-like per selezionare automaticamente il numero di breakpoint
-    algo = rpt.Pelt(model="rbf").fit(signal)
+def detect_cp(series_values):
+    sig = series_values.reshape(-1, 1)
     try:
-        breaks = algo.predict(pen=3)          # pen=3 ≈ BIC, restituisce 1 changepoint
-        if len(breaks) > 1:
-            cp_idx = breaks[0]                # primo changepoint significativo
-        else:
-            # Fallback: usa Binseg con 1 breakpoint forzato
-            algo2 = rpt.Binseg(model="l2").fit(signal)
-            cp_idx = algo2.predict(n_bkps=1)[0]
+        breaks = rpt.Pelt(model="rbf").fit(sig).predict(pen=3)
+        cp = breaks[0] if len(breaks) > 1 else rpt.Binseg(model="l2").fit(sig).predict(n_bkps=1)[0]
     except Exception:
-        algo2 = rpt.Binseg(model="l2").fit(signal)
-        cp_idx = algo2.predict(n_bkps=1)[0]
+        cp = rpt.Binseg(model="l2").fit(sig).predict(n_bkps=1)[0]
+    return min(cp, len(series_values) - 2)
 
-    cp_idx = min(cp_idx, len(df) - 2)        # sicurezza bordo
+SERIES = [("Brent", "log_brent"), ("Benzina", "log_benzina"), ("Diesel", "log_diesel")]
 
-    cp_date    = df.index[cp_idx]
-    shock_date = pd.Timestamp(cfg["shock_date"])
-    lag_days   = (cp_date - shock_date).days
+results     = []
+summary_rows = []
 
-    # Fit piecewise regression
-    b1, b2, a1, r2_1, r2_2 = fit_piecewise(x_idx, df.values, cp_idx)
-    dt1 = doubling_time(b1 * 7)              # converti da weekly a giorni
-    dt2 = doubling_time(b2 * 7)
-
-    result = {
-        "event":       event_name,
-        "series":      series_name,
-        "shock_date":  shock_date,
-        "cp_date":     cp_date,
-        "cp_idx":      cp_idx,
-        "lag_days":    lag_days,
-        "b1":          b1,
-        "b2":          b2,
-        "a1":          a1,
-        "dt1_giorni":  dt1,
-        "dt2_giorni":  dt2,
-        "r2_before":   r2_1,
-        "r2_after":    r2_2,
-        "df":          df,
-        "x_idx":       x_idx,
-    }
-    return result
-
-
-# ─────────────────────────────────────────
-# RUN: analisi per tutti gli eventi
-# ─────────────────────────────────────────
-results = []
-series_map = [
-    ("Brent",    "log_brent"),
-    ("Benzina",  "log_benzina"),
-    ("Diesel",   "log_diesel"),
-]
-
-print("\n" + "="*65)
-print(f"{'EVENTO':<25} {'SERIE':<10} {'TAU':<14} {'LAG (gg)':<10} {'H₀':<12}")
-print("="*65)
+print(f"{'EVENTO':<28} {'SERIE':<10} {'TAU':<14} {'LAG (gg)':<10} {'H0'}")
+print("="*70)
 
 for event_name, cfg in EVENTS.items():
-    for series_name, log_col in series_map:
+    for series_name, log_col in SERIES:
         if log_col not in merged.columns:
             continue
-        res = analyze_event(event_name, cfg, series_name, log_col)
-        if res is None:
+        df = merged.loc[cfg["window_start"]:cfg["window_end"], log_col].dropna()
+        if len(df) < 8:
             continue
-        results.append(res)
 
-        h0_status = "RIFIUTATA ✓" if res["lag_days"] < H0_THRESHOLD else "non rifiutata"
-        print(f"{event_name:<25} {series_name:<10} {str(res['cp_date'].date()):<14} "
-              f"{res['lag_days']:<10} {h0_status}")
+        cp_idx     = detect_cp(df.values)
+        cp_date    = df.index[cp_idx]
+        shock_date = pd.Timestamp(cfg["shock_date"])
+        lag        = (cp_date - shock_date).days
+        x          = np.arange(len(df))
+        b1, b2, a1, r2_1, r2_2 = fit_piecewise(x, df.values, cp_idx)
 
-print("="*65)
+        h0 = "RIFIUTATA" if lag < H0_THRESHOLD else "non rifiutata"
+        print(f"{event_name:<28} {series_name:<10} {str(cp_date.date()):<14} {lag:<10} {h0}")
 
-
-# ─────────────────────────────────────────
-# CALCOLO LAG D = τ_retail - τ_crude
-# ─────────────────────────────────────────
-print("\n" + "─"*50)
-print("LAG D = τ_retail − τ_crude (in giorni)")
-print("─"*50)
-
-lag_table = []
-
-for event_name in EVENTS:
-    res_by_series = {r["series"]: r for r in results if r["event"] == event_name}
-
-    if "Brent" not in res_by_series:
-        continue
-
-    tau_crude = res_by_series["Brent"]["cp_date"]
-
-    for fuel in ["Benzina", "Diesel"]:
-        if fuel not in res_by_series:
-            continue
-        tau_retail = res_by_series[fuel]["cp_date"]
-        D = (tau_retail - tau_crude).days
-
-        lag_table.append({
-            "Evento":      event_name,
-            "Carburante":  fuel,
-            "τ_crude":     tau_crude.date(),
-            "τ_retail":    tau_retail.date(),
-            "D (giorni)":  D,
-            "H₀ (≥30gg)":  "RIFIUTATA" if D < H0_THRESHOLD else "non rifiutata",
+        results.append({**cfg,
+            "event": event_name, "series": series_name,
+            "cp_date": cp_date, "cp_idx": cp_idx, "lag_days": lag,
+            "b1": b1, "b2": b2, "a1": a1,
+            "dt1": doubling_time(b1*7), "dt2": doubling_time(b2*7),
+            "r2_1": r2_1, "r2_2": r2_2, "df": df, "x": x,
+        })
+        summary_rows.append({
+            "Evento": event_name, "Serie": series_name,
+            "tau": cp_date.date(), "Shock": shock_date.date(),
+            "Lag (gg)": lag, "b1": round(b1,4), "b2": round(b2,4),
+            "DT1 (gg)": round(doubling_time(b1*7),1) if doubling_time(b1*7) != np.inf else "inf",
+            "DT2 (gg)": round(doubling_time(b2*7),1) if doubling_time(b2*7) != np.inf else "inf",
+            "R2_pre": round(r2_1,3), "R2_post": round(r2_2,3),
         })
 
-        print(f"  {event_name} | {fuel}: D = {D:+d} giorni → "
-              f"{'  SPECULAZIONE (D < 30gg)' if D < H0_THRESHOLD else 'compatibile con logistica'}")
+# Lag D = tau_retail - tau_crude
+print("\nLAG D = tau_retail - tau_crude")
+print("─"*50)
+lag_rows = []
+for event_name in EVENTS:
+    by_series = {r["series"]: r for r in results if r["event"] == event_name}
+    if "Brent" not in by_series:
+        continue
+    tau_crude = by_series["Brent"]["cp_date"]
+    for fuel in ["Benzina", "Diesel"]:
+        if fuel not in by_series:
+            continue
+        D = (by_series[fuel]["cp_date"] - tau_crude).days
+        flag = "SPECULAZIONE" if D < H0_THRESHOLD else "compatibile"
+        print(f"  {event_name} | {fuel}: D = {D:+d} gg → {flag}")
+        lag_rows.append({"Evento": event_name, "Carburante": fuel,
+                         "tau_crude": tau_crude.date(),
+                         "tau_retail": by_series[fuel]["cp_date"].date(),
+                         "D (gg)": D, "H0": "RIFIUTATA" if D < H0_THRESHOLD else "non rifiutata"})
 
-lag_df = pd.DataFrame(lag_table)
-lag_df.to_csv("data/lag_results.csv", index=False)
-print(f"\n  Risultati salvati in data/lag_results.csv")
-
-
-# ─────────────────────────────────────────
-# PLOT: regressione piecewise (come fig.1 del paper)
-# ─────────────────────────────────────────
-n_plots = len(results)
-if n_plots > 0:
-    ncols = 3
-    nrows = (n_plots + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(16, 5 * nrows))
-    axes = np.array(axes).flatten()
-
-    for i, res in enumerate(results):
-        ax = axes[i]
-        df_plot = res["df"]
-        x       = res["x_idx"]
-        cp      = res["cp_idx"]
-        b1, b2, a1 = res["b1"], res["b2"], res["a1"]
-
-        # Dati grezzi (log)
-        ax.scatter(df_plot.index, df_plot.values, s=10, color="black",
-                   alpha=0.6, label="log(prezzo)", zorder=3)
-
-        # Retta pre-changepoint (verde)
-        x1 = x[:cp]
-        y1_fit = a1 + b1 * x1
-        ax.plot(df_plot.index[:cp], y1_fit, color="green", lw=2,
-                label=f"b₁={b1:.4f}")
-
-        # Retta post-changepoint (rosso)
-        a2 = a1 + cp * (b1 - b2)
-        x2 = x[cp:]
-        y2_fit = a2 + b2 * x2
-        ax.plot(df_plot.index[cp:], y2_fit, color="red", lw=2,
-                label=f"b₂={b2:.4f}")
-
-        # Changepoint (blu verticale)
-        ax.axvline(res["cp_date"], color="blue", lw=2, linestyle="--",
-                   label=f"τ = {res['cp_date'].date()}")
-
-        # Shock date (arancione)
-        ax.axvline(res["shock_date"], color="orange", lw=1.5,
-                   linestyle=":", label=f"Shock = {res['shock_date'].date()}")
-
-        # Titolo con lag
-        lag = res["lag_days"]
-        color_title = "red" if lag < H0_THRESHOLD else "black"
-        ax.set_title(f"{res['event']} | {res['series']}\nD = {lag:+d}gg",
-                     fontsize=9, color=color_title)
-
-        ax.legend(fontsize=7)
-        ax.grid(alpha=0.3)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %y"))
-        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
-        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, fontsize=7)
-        ax.set_ylabel("log(prezzo)", fontsize=8)
-
-    # Nascondi assi vuoti
-    for j in range(len(results), len(axes)):
-        axes[j].set_visible(False)
-
-    fig.suptitle(
-        "Changepoint detection — Regressione piecewise lineare\n"
-        "(verde = pre-shock, rosso = post-shock, blu = changepoint, arancione = data guerra)",
-        fontsize=12, fontweight="bold"
-    )
-    plt.tight_layout()
-    plt.savefig("plots/02_changepoints.png", dpi=150, bbox_inches="tight")
-    plt.close()
-    print("\n Plot salvato: plots/02_changepoints.png")
+pd.DataFrame(lag_rows).to_csv("data/lag_results.csv", index=False)
+pd.DataFrame(summary_rows).to_csv("data/table1_changepoints.csv", index=False)
 
 
 # ─────────────────────────────────────────
-# TABELLA RIASSUNTIVA (come Table 1 del paper)
+# PLOT: un grafico per ogni (evento x serie)
 # ─────────────────────────────────────────
-summary_rows = []
 for res in results:
-    summary_rows.append({
-        "Evento":         res["event"],
-        "Serie":          res["series"],
-        "τ (changepoint)": res["cp_date"].date(),
-        "Shock date":     res["shock_date"].date(),
-        "Lag (giorni)":   res["lag_days"],
-        "b₁ (pre)":       round(res["b1"], 4),
-        "b₂ (post)":      round(res["b2"], 4),
-        "DT₁ (giorni)":   round(res["dt1_giorni"], 1) if res["dt1_giorni"] != np.inf else "∞",
-        "DT₂ (giorni)":   round(res["dt2_giorni"], 1) if res["dt2_giorni"] != np.inf else "∞",
-        "R² pre":         round(res["r2_before"], 3),
-        "R² post":        round(res["r2_after"], 3),
-    })
+    df_plot = res["df"]
+    x       = res["x"]
+    cp      = res["cp_idx"]
+    b1, b2, a1 = res["b1"], res["b2"], res["a1"]
+    a2      = a1 + cp * (b1 - b2)
 
-summary_df = pd.DataFrame(summary_rows)
-summary_df.to_csv("data/table1_changepoints.csv", index=False)
-print("\n Table 1:")
-print(summary_df.to_string(index=False))
-print("\n Script 02 completato.")
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+
+    # Log prezzi grezzi
+    ax.scatter(df_plot.index, df_plot.values, s=18, color="black", alpha=0.55,
+               zorder=3, label="log(prezzo)")
+
+    # Retta pre-changepoint
+    ax.plot(df_plot.index[:cp],
+            a1 + b1 * x[:cp],
+            color="#27ae60", lw=2.5, label=f"Pre-shock  b₁ = {b1:.4f}")
+
+    # Retta post-changepoint
+    ax.plot(df_plot.index[cp:],
+            a2 + b2 * x[cp:],
+            color="#e74c3c", lw=2.5, label=f"Post-shock b₂ = {b2:.4f}")
+
+    # Changepoint
+    ax.axvline(res["cp_date"], color="#2980b9", lw=2.2, linestyle="--",
+               label=f"Changepoint τ = {res['cp_date'].date()}")
+
+    # Shock
+    ax.axvline(pd.Timestamp(res["shock_date"]), color=res["color"], lw=2.0,
+               linestyle=":", label=f"Shock = {res['shock_date']}")
+
+    lag = res["lag_days"]
+    dt2 = res["dt2"]
+    dt2_str = f"{dt2:.1f}" if dt2 != np.inf else "∞"
+
+    ax.set_title(
+        f"{res['event']} — {res['series']}\n"
+        f"D = {lag:+d} giorni  |  DT₁ = {str(round(res['dt1'],1)) if res['dt1']!=np.inf else 'inf'}gg  →  "
+        f"DT₂ = {dt2_str}gg",
+        fontsize=13, fontweight="bold",
+        color="#c0392b" if lag < H0_THRESHOLD else "black"
+    )
+    ax.set_ylabel("log(prezzo)", fontsize=12)
+    ax.legend(fontsize=10)
+    ax.grid(alpha=0.3)
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
+    plt.xticks(rotation=45, fontsize=10)
+
+    safe_event  = res["event"].replace(" ", "_").replace("(","").replace(")","").replace("/","")
+    safe_series = res["series"].lower()
+    fname = f"plots/02_{safe_event}_{safe_series}.png"
+    plt.tight_layout()
+    plt.savefig(fname, dpi=DPI, bbox_inches="tight")
+    plt.close()
+    print(f"  Salvato: {fname}")
+
+print("\nScript 02 completato.")
