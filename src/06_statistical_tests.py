@@ -290,7 +290,7 @@ rolling_corr = {}
 for fuel_name, fuel_col in FUELS.items():
     if fuel_col not in merged.columns:
         continue
-    rc = merged["brent_7d"].rolling(ROLL_WIN).corr(merged[fuel_col])
+    rc = merged["brent_7d_eur"].rolling(ROLL_WIN).corr(merged[fuel_col])
     rolling_corr[fuel_name] = rc
     print(f"  {fuel_name}: corr media = {rc.mean():.4f} | "
           f"corr durante Ucraina (mar 2022) = "

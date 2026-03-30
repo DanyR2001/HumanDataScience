@@ -10,7 +10,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 merged = pd.read_csv("data/dataset_merged.csv", index_col=0, parse_dates=True)
-merged["d_brent"]   = merged["brent_7d"].pct_change() * 100
+merged["d_brent"] = merged["brent_7d_eur"].pct_change() * 100
 merged["d_benzina"] = merged["benzina_4w"].pct_change() * 100
 merged["d_diesel"]  = merged["diesel_4w"].pct_change() * 100
 merged.dropna(inplace=True)
@@ -89,7 +89,7 @@ for fuel_name, res in rf_results.items():
 
 # ── Plot 2: Prezzi normalizzati nel tempo — un plot per carburante
 base_date = merged.index[0]
-brent_norm_base = merged["brent_7d"].iloc[0]
+brent_norm_base = merged["brent_7d_eur"].iloc[0] 
 
 for fuel_name, res in rf_results.items():
     col4w  = res["col4w"]
@@ -97,7 +97,7 @@ for fuel_name, res in rf_results.items():
     fuel_norm_base = merged[col4w].iloc[0]
 
     fig, ax = plt.subplots(figsize=(14, 5))
-    ax.plot(merged.index, merged["brent_7d"] / brent_norm_base * 100,
+    ax.plot(merged.index, merged["brent_7d_eur"] / brent_norm_base * 100,
             color="#2166ac", lw=2.0, label="Brent (base=100)")
     ax.plot(merged.index, merged[col4w] / fuel_norm_base * 100,
             color=fc, lw=2.0, label=f"{fuel_name} (base=100)")
