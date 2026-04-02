@@ -1,0 +1,34 @@
+DOMANDE PER HDS
+Gruppo 1
+Keywords: carburanti, speculazione, crisi energetica
+
+--- H0: H0: The lag between a crude oil price increment (Brent) and the corresponding change in Italian retail fuel prices is >= 30 days, consistent with the physical supply chain (maritime transport + refining + storage + distribution).
+
+**TODO**: da dove peschiamo il dato dei 30GG di supply chain? (Italian import profile)
+**TODO**: parliamo di Italia, da dove derivano il nostro greggio?  Africa, medio oriente...
+**TODO**: accise mobili? consideriamo prezzi con o senza taxes?
+**TODO**: consideriamo solo fasi ascendenti di prezzo? 
+**TODO**: Quali eventi? Solo guerre, guerre in quali aree geografiche? Medcioriente o tutte quelle da dove viene fuel? solo verso italia / europa?
+          Solo shock events
+          
+
+DOMANDE PER PROF in 31/03/2026:
+**TODO**: quale distribuzione usare, regressione lineare non matcha bene in hormuz benzina, hormuz diesel, dati molto scattered
+          come approcciare, quale metodo usare 
+          ==> VERIFICARE SE la regressione lineare (bayesiana) puo' essere usata per modellare: distriubzione normale errori, omoschedasticita', autocorrelazione 
+          ==> eventualmente usare un altro modello 
+          ==> poisson molto usato, GLM generale -> controllare suo paper per le metodologie
+
+
+**TODO**: granularita dei dati aggrregati -> settimane, bisettimane, mesi
+          ==> importa che greggio e prezzo pompa sia con stessa granularita, OK settimanale se i dati sono aggregati cosi'
+
+**TODO**: in caso di valuta diversa          
+        ==> normalizzazione con cambio euro dollaro di quella settimana
+
+
+
+ALTRO:
+**TODO**: come approcciare la questione quando si hanno i dati, quali test fare, quali analisi fare
+**TODO**: Possiamo seguire la falsa riga del suo progetto sul covid e le scuole 
+**TODO**: changepoint regression add Intervallo di Confidenza -> da introdurre, come deciderlo

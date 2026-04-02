@@ -463,6 +463,271 @@ print()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 8. TEST PER SELEZIONE DEL TIPO DI REGRESSIONE
+#    Risponde alla domanda: quale modello è più appropriato?
+#    Test implementati:
+#      8a. Breusch-Pagan (LM test)   → eteroschedasticità formale
+#      8b. Ljung-Box                 → autocorrelazione dei residui (AR test)
+#      8c. AIC/BIC OLS vs GLSAR      → quale modello fitta meglio?
+#      8d. Confronto SE: OLS vs HAC vs GLSAR  → quanto distorcono gli SE classici?
+#      8e. Decisione finale          → raccomandazione motivata per ogni serie
+#
+#    OUTPUT: data/regression_selection.csv  +  plots/08_regression_selection.png
+# ─────────────────────────────────────────────────────────────────────────────
+print("=" * 65)
+print("8. TEST SELEZIONE TIPO DI REGRESSIONE")
+print("   OLS standard vs HAC Newey-West vs GLSAR AR(1) vs Bayesian StudentT+AR(1)")
+print("=" * 65)
+
+from statsmodels.regression.linear_model import OLS, GLSAR
+from statsmodels.stats.sandwich_covariance import cov_hac
+from statsmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.stats.stattools import durbin_watson
+
+def breusch_pagan_lm(residuals, fitted):
+    """Breusch-Pagan LM test: H0 = omoschedasticità."""
+    n  = len(residuals)
+    e2 = residuals ** 2
+    X_ = np.column_stack([np.ones(n), fitted])
+    b_, _, _, _ = np.linalg.lstsq(X_, e2, rcond=None)
+    e2h = X_ @ b_
+    ss_res = np.sum((e2 - e2h)**2)
+    ss_tot = np.sum((e2 - e2.mean())**2)
+    r2 = 1 - ss_res/ss_tot if ss_tot > 0 else 0.
+    lm = n * r2
+    return lm, 1 - stats.chi2.cdf(lm, df=1)
+
+
+# Serie da testare: serie in livelli log sulle finestre evento
+SERIES_LOG = {
+    "log_brent":    "Brent",
+    "log_benzina":  "Benzina",
+    "log_diesel":   "Diesel",
+}
+
+reg_sel_rows = []
+
+for event_name, cfg in EVENTS.items():
+    shock = cfg["shock"]
+    window_data = merged.loc[cfg["pre_start"]:cfg["post_end"]].dropna()
+    n_obs = len(window_data)
+    if n_obs < 15:
+        continue
+
+    x_arr = np.arange(n_obs, dtype=float)
+    X_mat = np.column_stack([np.ones(n_obs), x_arr])
+
+    for log_col, series_label in SERIES_LOG.items():
+        if log_col not in window_data.columns:
+            continue
+
+        y_arr = window_data[log_col].values
+
+        # ── 8a. OLS baseline
+        ols_res  = OLS(y_arr, X_mat).fit()
+        resid_ols = ols_res.resid
+        fitted_ols = ols_res.fittedvalues
+
+        # ── 8b. Breusch-Pagan (eteroschedasticità)
+        bp_lm, bp_p = breusch_pagan_lm(resid_ols, fitted_ols)
+        bp_verdict  = "eteroschedasticità" if bp_p < ALPHA else "omoschedasticità"
+
+        # ── 8c. Ljung-Box (autocorrelazione residui, lag 1–4)
+        lb_lags = min(4, n_obs // 4)
+        lb_res  = acorr_ljungbox(resid_ols, lags=lb_lags, return_df=True)
+        lb_p_min = float(lb_res["lb_pvalue"].min())   # p più basso tra i lag
+        lb_verdict = "autocorrelazione" if lb_p_min < ALPHA else "no autocorrelazione"
+
+        # ── 8d. Durbin-Watson
+        dw_val = durbin_watson(resid_ols)
+        if dw_val < 1.5:
+            dw_verdict = "autocorrelazione positiva"
+        elif dw_val > 2.5:
+            dw_verdict = "autocorrelazione negativa"
+        else:
+            dw_verdict = "assenza autocorrelazione"
+
+        # ── 8e. GLSAR AR(1)
+        try:
+            gl_res    = GLSAR(y_arr, X_mat, rho=1).iterative_fit(maxiter=10)
+            rho_ar    = float(gl_res.rho)
+            aic_ols   = ols_res.aic
+            aic_glsar = gl_res.aic
+            bic_ols   = ols_res.bic
+            bic_glsar = gl_res.bic
+            glsar_ok  = True
+        except Exception:
+            rho_ar = np.nan
+            aic_ols = ols_res.aic
+            aic_glsar = np.nan
+            bic_ols = ols_res.bic
+            bic_glsar = np.nan
+            glsar_ok = False
+
+        # ── 8f. Confronto SE: OLS classici vs HAC vs GLSAR
+        se_ols_slope  = float(ols_res.bse[1])
+        cov_nw_mat    = cov_hac(ols_res, nlags=4)
+        se_hac_slope  = float(np.sqrt(cov_nw_mat[1, 1]))
+        if glsar_ok:
+            cov_gl  = cov_hac(gl_res, nlags=4)
+            se_gl_slope = float(np.sqrt(cov_gl[1, 1]))
+        else:
+            se_gl_slope = np.nan
+
+        # ── 8g. Decisione finale basata sui test
+        issues = []
+        if bp_p < ALPHA:
+            issues.append("eteroschedasticità")
+        if lb_p_min < ALPHA or dw_val < 1.5:
+            issues.append("AR(1)")
+        if stats.shapiro(resid_ols)[1] < ALPHA:
+            issues.append("non-normalità")
+
+        if not issues:
+            recommendation = "OLS standard"
+            rec_reason     = "tutte le ipotesi soddisfatte"
+        elif "AR(1)" in issues and "non-normalità" in issues:
+            recommendation = "Bayesian StudentT + AR(1)"
+            rec_reason     = "autocorrelazione + non-normalità simultanee"
+        elif "AR(1)" in issues:
+            recommendation = "GLSAR AR(1) + HAC"
+            rec_reason     = "autocorrelazione nei residui"
+        elif "eteroschedasticità" in issues:
+            recommendation = "OLS + HAC Newey-West"
+            rec_reason     = "eteroschedasticità (no autocorrelazione)"
+        else:
+            recommendation = "OLS + HAC Newey-West"
+            rec_reason     = "violazione minore"
+
+        row = {
+            "Evento":         event_name,
+            "Serie":          series_label,
+            "n_obs":          n_obs,
+            "BP_LM":          round(bp_lm, 3),
+            "BP_p":           round(bp_p, 4),
+            "BP_verdict":     bp_verdict,
+            "LjungBox_p_min": round(lb_p_min, 4),
+            "LB_verdict":     lb_verdict,
+            "DW":             round(dw_val, 4),
+            "DW_verdict":     dw_verdict,
+            "rho_AR1":        round(rho_ar, 3) if not np.isnan(rho_ar) else "N/A",
+            "AIC_OLS":        round(aic_ols, 2),
+            "AIC_GLSAR":      round(aic_glsar, 2) if not np.isnan(aic_glsar) else "N/A",
+            "BIC_OLS":        round(bic_ols, 2),
+            "BIC_GLSAR":      round(bic_glsar, 2) if not np.isnan(bic_glsar) else "N/A",
+            "SE_OLS_slope":   round(se_ols_slope, 6),
+            "SE_HAC_slope":   round(se_hac_slope, 6),
+            "SE_GLSAR_slope": round(se_gl_slope, 6) if not np.isnan(se_gl_slope) else "N/A",
+            "SE_inflation_%": round((se_hac_slope / se_ols_slope - 1) * 100, 1) if se_ols_slope > 0 else "N/A",
+            "Problemi":       " + ".join(issues) if issues else "nessuno",
+            "Raccomandazione": recommendation,
+            "Motivazione":    rec_reason,
+        }
+        reg_sel_rows.append(row)
+
+        inflate_str = f"{row['SE_inflation_%']}%" if row['SE_inflation_%'] != "N/A" else "N/A"
+        aic_delta   = round(aic_ols - aic_glsar, 1) if not np.isnan(aic_glsar) else "N/A"
+        print(f"\n  {event_name} | {series_label}:")
+        print(f"    BP p={bp_p:.4f} ({bp_verdict}) | LB p_min={lb_p_min:.4f} ({lb_verdict}) | DW={dw_val:.3f} ({dw_verdict})")
+        print(f"    ρ AR(1)={row['rho_AR1']}  |  ΔAIC(OLS-GLSAR)={aic_delta}")
+        print(f"    SE OLS={se_ols_slope:.5f} → SE HAC={se_hac_slope:.5f} (+{inflate_str})")
+        print(f"    ✦ RACCOMANDAZIONE: {recommendation}  [{rec_reason}]")
+
+pd.DataFrame(reg_sel_rows).to_csv("data/regression_selection.csv", index=False)
+print(f"\n  Salvato: data/regression_selection.csv")
+print()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLOT 8: Confronto SE per metodo + Mappa decisioni
+# ─────────────────────────────────────────────────────────────────────────────
+if reg_sel_rows:
+    df_sel = pd.DataFrame(reg_sel_rows)
+
+    fig8, axes8 = plt.subplots(1, 2, figsize=(15, 6))
+    fig8.suptitle(
+        "Selezione Tipo di Regressione — Test Diagnostici\n"
+        "Confronto SE: OLS classico vs HAC Newey-West vs GLSAR AR(1)",
+        fontsize=12, fontweight="bold"
+    )
+
+    # ── Pannello sinistro: SE inflation (% di distorsione OLS→HAC)
+    ax8l = axes8[0]
+    df_sel_num = df_sel[df_sel["SE_inflation_%"] != "N/A"].copy()
+    df_sel_num["SE_inflation_%"] = df_sel_num["SE_inflation_%"].astype(float)
+    labels_l = [f"{r['Evento'].split('(')[0].strip()}\n{r['Serie']}"
+                for _, r in df_sel_num.iterrows()]
+    colors_l = ["#e74c3c" if v > 50 else "#e67e22" if v > 20 else "#27ae60"
+                for v in df_sel_num["SE_inflation_%"]]
+    bars_l = ax8l.barh(range(len(labels_l)), df_sel_num["SE_inflation_%"].values,
+                       color=colors_l, alpha=0.80, edgecolor="black", lw=0.5)
+    for i, (_, row) in enumerate(df_sel_num.iterrows()):
+        ax8l.text(df_sel_num["SE_inflation_%"].values[i] + 0.5, i,
+                  f"{row['SE_inflation_%']:.0f}%",
+                  va="center", fontsize=8)
+    ax8l.axvline(0, color="black", lw=0.8)
+    ax8l.axvline(20, color="#e67e22", lw=1.4, linestyle="--",
+                 label="soglia warning (20%)")
+    ax8l.axvline(50, color="#e74c3c", lw=1.4, linestyle="--",
+                 label="soglia critica (50%)")
+    ax8l.set_yticks(range(len(labels_l)))
+    ax8l.set_yticklabels(labels_l, fontsize=8)
+    ax8l.set_xlabel("SE distorsione OLS→HAC (%)", fontsize=10)
+    ax8l.set_title("Distorsione SE: OLS classico vs HAC\n(rosso = OLS molto distorto)", fontsize=10)
+    ax8l.legend(fontsize=8)
+    ax8l.grid(alpha=0.3, axis="x")
+
+    # ── Pannello destro: heatmap decisioni (tabella colorata)
+    ax8r = axes8[1]
+    ax8r.axis("off")
+
+    rec_colors = {
+        "OLS standard":               "#27ae60",
+        "OLS + HAC Newey-West":        "#f39c12",
+        "GLSAR AR(1) + HAC":           "#e67e22",
+        "Bayesian StudentT + AR(1)":   "#e74c3c",
+    }
+    col_headers = ["Evento", "Serie", "BP", "LB", "DW", "ρ AR(1)", "Raccomandazione"]
+    rows_tab    = []
+    for _, row in df_sel.iterrows():
+        rows_tab.append([
+            row["Evento"].split("(")[0].strip(),
+            row["Serie"],
+            f"p={row['BP_p']:.3f}",
+            f"p={row['LjungBox_p_min']:.3f}",
+            f"{row['DW']:.2f}",
+            str(row["rho_AR1"]),
+            row["Raccomandazione"],
+        ])
+
+    tbl = ax8r.table(
+        cellText=rows_tab,
+        colLabels=col_headers,
+        cellLoc="center", loc="center",
+        bbox=[0, 0, 1, 1]
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(7.5)
+    for (r_idx, c_idx), cell in tbl.get_celld().items():
+        if r_idx == 0:
+            cell.set_facecolor("#2c3e50")
+            cell.set_text_props(color="white", fontweight="bold")
+        elif c_idx == 6:  # colonna Raccomandazione
+            rec_text = rows_tab[r_idx - 1][6] if r_idx > 0 else ""
+            cell.set_facecolor(rec_colors.get(rec_text, "#ecf0f1"))
+            cell.set_text_props(fontweight="bold", fontsize=6.5)
+        else:
+            cell.set_facecolor("#f8f9fa" if r_idx % 2 == 0 else "white")
+    ax8r.set_title("Matrice di Decisione: Tipo di Regressione", fontsize=10, fontweight="bold", pad=10)
+
+    fig8.tight_layout(pad=1.5)
+    fig8.savefig("plots/08_regression_selection.png", dpi=180, bbox_inches="tight")
+    plt.close(fig8)
+    print("  Plot salvato: plots/08_regression_selection.png")
+    print()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PLOTS
 # ─────────────────────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(2, 2, figsize=(15, 11))
@@ -569,20 +834,22 @@ print("Plot salvato: plots/06_statistical_tests.png")
 print("\n" + "=" * 65)
 print("SOMMARIO — Tutti i test statistici")
 print("=" * 65)
-print(f"  {'Test':<30} {'H0 rifiutata?':<15} {'File output'}")
-print(f"  {'-'*60}")
-print(f"  {'Kolmogorov-Smirnov':<30} {'vedi tabella':<15} data/ks_results.csv")
-print(f"  {'ANOVA (3 periodi)':<30} {'vedi tabella':<15} data/anova_results.csv")
-print(f"  {'Chow Test':<30} {'vedi tabella':<15} data/chow_results.csv")
-print(f"  {'CCF (lag ottimale)':<30} {'vedi output':<15} —")
-print(f"  {'Rolling Correlation':<30} {'visualizzazione':<15} plots/06_...")
-print(f"  {'Bootstrap CI (95%)':<30} {'vedi tabella':<15} data/bootstrap_ci.csv")
-print(f"  {'RMSE / MAE':<30} {'vedi tabella':<15} data/fit_quality.csv")
+print(f"  {'Test':<35} {'H0 rifiutata?':<15} {'File output'}")
+print(f"  {'-'*65}")
+print(f"  {'Kolmogorov-Smirnov':<35} {'vedi tabella':<15} data/ks_results.csv")
+print(f"  {'ANOVA (3 periodi)':<35} {'vedi tabella':<15} data/anova_results.csv")
+print(f"  {'Chow Test':<35} {'vedi tabella':<15} data/chow_results.csv")
+print(f"  {'CCF (lag ottimale)':<35} {'vedi output':<15} —")
+print(f"  {'Rolling Correlation':<35} {'visualizzazione':<15} plots/06_...")
+print(f"  {'Bootstrap CI (95%)':<35} {'vedi tabella':<15} data/bootstrap_ci.csv")
+print(f"  {'RMSE / MAE':<35} {'vedi tabella':<15} data/fit_quality.csv")
+print(f"  {'Selezione tipo regressione':<35} {'vedi tabella':<15} data/regression_selection.csv")
 print()
-print("  Script 02: Bayesian changepoint + piecewise regression")
+print("  Script 02: Bayesian changepoint — StudentT + AR(1) MCMC")
 print("  Script 03: Granger causality (ADF + F-test)")
-print("  Script 04: Rockets & Feathers (OLS + t-test asimmetria)")
+print("  Script 04: Rockets & Feathers (GLSAR AR(1) + HAC Newey-West)")
 print("  Script 06: KS, ANOVA, Chow, CCF, Rolling Corr, Bootstrap, RMSE/MAE")
+print("  Script 06 §8: Test selezione regressione (BP, LB, DW, AIC/BIC, SE comparison)")
 print()
 print("Tutti i risultati sono salvati in data/ e plots/")
 print("Tutto il codice e i risultati sono riproducibili.")
