@@ -32,3 +32,29 @@ ALTRO:
 **TODO**: come approcciare la questione quando si hanno i dati, quali test fare, quali analisi fare
 **TODO**: Possiamo seguire la falsa riga del suo progetto sul covid e le scuole 
 **TODO**: changepoint regression add Intervallo di Confidenza -> da introdurre, come deciderlo
+
+
+--------------
+Date e info FACT CHECKING
+- L'invasione russa dell'Ucraina del 2022 - 24 febbraio 2022
+- 12 day war - 13 to 24 June 2025
+- 2026 Strait of Hormuz crisis - 28 February 2026
+
+Ma come funziona importazione in italia? 
+- Net crude oil imports = 91.3% of 2024 total crude oil supply 
+https://www.iea.org/countries/italy/oil
+https://www.statista.com/statistics/789168/volume-of-crude-oil-imported-by-country-of-origin-in-italy/
+
+
+
+- Attualmente, la produzione nazionale di greggio rappresenta circa l’8 per cento del totale
+-> quindi 92% importato
+UNEM_25_relazione_annuale
+
+- nel 2024 abbiamo importato 86 qualità di greggi da 30 Paesi: africa, libia, arzebaijan, kazakista
+UNEM_25_relazione_annuale (ndr: da tutti questi paesi arriva praticamente solo per mare)
+
+- L'Organismo Centrale di Stoccaggio Italiano (OCSIT) ha un piano per coprire progressivamente 30 giorni di scorte specifiche in prodotti.
+UNEM_25_relazione_annuale
+
+- I 30 gg 
