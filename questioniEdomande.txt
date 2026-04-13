@@ -49,12 +49,30 @@ https://www.statista.com/statistics/789168/volume-of-crude-oil-imported-by-count
 
 - Attualmente, la produzione nazionale di greggio rappresenta circa l’8 per cento del totale
 -> quindi 92% importato
-UNEM_25_relazione_annuale
+        UNEM_25_relazione_annuale
 
 - nel 2024 abbiamo importato 86 qualità di greggi da 30 Paesi: africa, libia, arzebaijan, kazakista
-UNEM_25_relazione_annuale (ndr: da tutti questi paesi arriva praticamente solo per mare)
+        UNEM_25_relazione_annuale (ndr: da tutti questi paesi arriva praticamente solo per mare)
 
 - L'Organismo Centrale di Stoccaggio Italiano (OCSIT) ha un piano per coprire progressivamente 30 giorni di scorte specifiche in prodotti.
-UNEM_25_relazione_annuale
+        UNEM_25_relazione_annuale
 
-- I 30 gg 
+- In a crude oil/refining chain, the typical lag time between acquisition of raw material at source
+and dispensing of final product at the pump will vary between 30 and 75 days, depending on
+complexity and extension of the supply system. In a marine supply configuration this total lag
+time covers tanker loading at source, tanker voyage, crude inventory turnover time at refinery,
+processing time, product inventory turnover time at refinery and the local transport and inventory
+turnover time between refinery and dispensing at the pump.
+In a finished product marine supply chain the physical lag time between tanker loading at source
+and dispensing final product at the pump will be shorter, in the 15 to 60 day range, depending on
+the configuration of the system.
+        Petroleum Product Markets in Sub-Saharan Africa
+        https://documents.worldbank.org/en/publication/documents-reports/documentdetail/767991468202165845
+        2009
+
+- Hussain et al. (2006) describes how the whole supply chain in this industry as very
+complex compared to other industries. The crude oil has to make a long journey
+from the point of production to the refineries. Long distance results in a long lead
+time of several weeks and in numerous players in the supply chain.
+        Supply Chain Optimization in the Oil Industry: A Case Study of MOL Hungarian Oil and Gas PLC
+        
