@@ -58,6 +58,17 @@ import yfinance as yf
 import warnings
 warnings.filterwarnings("ignore")
 
+
+def _flatten_yf(df):
+    """
+    yfinance >= 0.2.x restituisce colonne MultiIndex come ('Close', 'BZ=F').
+    Questa funzione appiattisce al primo livello → 'Close', 'Open', ecc.
+    Se le colonne sono già semplici, non fa nulla.
+    """
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
+
 # ─── Configurazione ──────────────────────────────────────────────────────────
 DPI          = 180
 MCMC_DRAWS   = 2000
@@ -142,8 +153,8 @@ if "eurusd" in merged.columns and merged["eurusd"].dropna().mean() > 0.5:
     print("  EUR/USD già presente in dataset_merged")
 else:
     try:
-        eurusd_raw = yf.download("EURUSD=X", start="2021-01-01",
-                                  end="2026-03-20", progress=False)
+        eurusd_raw = _flatten_yf(yf.download("EURUSD=X", start="2021-01-01",
+                                  end="2026-03-20", progress=False))
         eurusd_w = (eurusd_raw[["Close"]]
                     .rename(columns={"Close": "eurusd_new"})
                     .resample("W-MON").mean().ffill())
@@ -162,8 +173,8 @@ else:
 # ─────────────────────────────────────────
 print("\nBrent Futures (BZ=F)...")
 try:
-    fut_raw = yf.download("BZ=F", start="2021-01-01",
-                           end="2026-03-20", progress=False)
+    fut_raw = _flatten_yf(yf.download("BZ=F", start="2021-01-01",
+                           end="2026-03-20", progress=False))
     if fut_raw.empty:
         raise ValueError("download vuoto")
 
@@ -192,6 +203,20 @@ except Exception as e:
     else:
         merged["brent_fut_eur_l"] = np.nan
 
+# ─── DIAGNOSTICO: stampa i valori medi per verificare le unità ───
+print("\n" + "="*70)
+print("DIAGNOSTICO UNITÀ")
+print("="*70)
+for col, desc in [
+    ("benzina_eur_l_norm", "Prezzo pompa normalizzato"),
+    ("brent_fut_eur_l",    "Brent futures"),
+    ("margine_benzina",    "Margine calcolato"),
+]:
+    if col in merged.columns:
+        val = merged[col].dropna().mean()
+        print(f"{desc:<35}: {val:.4f} EUR/L")
+        print(f"  → range: [{merged[col].min():.4f}, {merged[col].max():.4f}]")
+print()
 
 # ─────────────────────────────────────────
 # 5. CRACK SPREAD (RBOB + Heating Oil) — metodo preferito
@@ -199,8 +224,8 @@ except Exception as e:
 print("\nTentativo crack spread RBOB/HO...")
 use_crack = False
 try:
-    rb  = yf.download("RB=F", start="2021-01-01", end="2026-03-20", progress=False)
-    ho  = yf.download("HO=F", start="2021-01-01", end="2026-03-20", progress=False)
+    rb  = _flatten_yf(yf.download("RB=F", start="2021-01-01", end="2026-03-20", progress=False))
+    ho  = _flatten_yf(yf.download("HO=F", start="2021-01-01", end="2026-03-20", progress=False))
     if rb.empty or ho.empty:
         raise ValueError("Dati vuoti")
 
