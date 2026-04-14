@@ -18,6 +18,7 @@ SCRIPTS = [
     "03_granger_causality.py",
     "04_rocket_feather.py",
     "06_statistical_tests.py", 
+    "07_margine_speculation_test.py"
 ]
 
 print("=" * 65)

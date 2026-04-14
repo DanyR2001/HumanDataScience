@@ -1,0 +1,7 @@
+Evento,Serie,Metodo,n_pre,n_post,delta_margine_eur,boot_CI_lo,boot_CI_hi,soglia_2sigma,delta_anomalo,t_p,ks_p,tau_margine,lag_tau_vs_shock,break_strutturale,nu_StudentT,rho_AR1,classificazione
+Ucraina (Feb 2022),Benzina,yield fisso (YIELD=0.45/0.52) su brent_fut EUR/L,21,22,0.25943,0.21794,0.30008,0.09756,True,0.0,0.0,2022-07-11,137,False,28.01,0.924,SPECULAZIONE
+Ucraina (Feb 2022),Diesel,yield fisso (YIELD=0.45/0.52) su brent_fut EUR/L,21,22,0.32525,0.27886,0.36697,0.08595,True,0.0,0.0,2022-07-18,144,False,27.79,0.898,SPECULAZIONE
+Iran-Israele (Giu 2025),Benzina,yield fisso (YIELD=0.45/0.52) su brent_fut EUR/L,19,20,-0.00756,-0.01888,0.00387,0.09756,False,0.2204,0.2074,2025-02-10,-123,False,17.23,0.878,ANTICIPAZIONE RAZIONALE / NEUTRO
+Iran-Israele (Giu 2025),Diesel,yield fisso (YIELD=0.45/0.52) su brent_fut EUR/L,19,20,-0.00583,-0.02099,0.00994,0.08595,False,0.4856,0.232,2025-02-10,-123,False,1.9,0.932,ANTICIPAZIONE RAZIONALE / NEUTRO
+Hormuz (Feb 2026),Benzina,yield fisso (YIELD=0.45/0.52) su brent_fut EUR/L,21,3,0.02513,-0.00035,0.05608,0.09756,False,0.2809,0.2885,2026-03-02,2,False,36.07,0.802,ANTICIPAZIONE RAZIONALE / NEUTRO
+Hormuz (Feb 2026),Diesel,yield fisso (YIELD=0.45/0.52) su brent_fut EUR/L,21,3,0.0885,0.00431,0.1828,0.08595,True,0.2377,0.1324,2025-10-13,-138,False,1.34,0.841,INCONCLUSIVO
