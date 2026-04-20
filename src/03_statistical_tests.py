@@ -16,6 +16,13 @@ CONTENUTO:
   §4. Cross-Correlation (CCF) e rolling correlation
   §5. Bootstrap 95% CI sul lag D (changepoint vs shock)
   §6. Selezione tipo di regressione (BP, Ljung-Box, DW, AIC/BIC)
+  §7. Welch t-test — margine lordo pre vs post shock (test ausiliario)
+      → two-sample t-test (varianze non uguali) sul crack spread IT
+      → complementa lo z-score BH di script 02 con approccio frequentista classico
+  §8. Difference-in-Differences (DiD) — Italia vs Germania
+      → carica dati DE dallo stesso file EU Oil Bulletin già scaricato
+      → modello OLS: M_{c,t} = α + β1·Italy + β2·Post + δ·(Italy×Post) + ε
+      → δ = estimatore DiD: quota anomalia specifica al mercato IT
 
 Output:
   data/granger_benzina.csv
@@ -26,10 +33,13 @@ Output:
   data/chow_results.csv
   data/bootstrap_ci.csv
   data/regression_selection.csv
+  data/ttest_margin.csv
+  data/did_results.csv
   plots/03_granger_combined.png
   plots/04_rf_combined.png
   plots/06_statistical_tests.png
   plots/08_regression_selection.png
+  plots/09_ttest_did.png
 """
 
 import pandas as pd
@@ -43,6 +53,7 @@ from statsmodels.stats.sandwich_covariance import cov_hac
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.stats.stattools import durbin_watson
 from scipy import stats
+import openpyxl as _opxl
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -121,6 +132,20 @@ merged["d_log_benzina"] = merged["log_benzina"].diff()
 merged["d_log_diesel"]  = merged["log_diesel"].diff()
 merged_d = merged.dropna()
 
+# ── Filtro 2020 per Granger ───────────────────────────────────────────────────
+# Il 2020 (COVID-19) ha distorto strutturalmente il mercato energetico:
+# WTI negativo ad aprile, domanda collassata ~25%, prezzi pompa sganciati
+# dalla dinamica normale Brent→distribuzione. Includerlo nel Granger
+# introdurrebbe un regime non-stazionario estraneo alla domanda di ricerca
+# (speculazione in condizioni normali di mercato).
+# Tutte le altre analisi (KS, ANOVA, Chow, DiD) usano finestre per-evento
+# che partono da settembre 2021 e non sono interessate da questo filtro.
+# Rif: Baumeister & Kilian (2020) sull'eccezionalità del COVID per i mercati oil.
+merged_granger = merged_d[merged_d.index.year != 2020].copy()
+n_removed = len(merged_d) - len(merged_granger)
+print(f"  [Granger] Escluso 2020 COVID: {n_removed} settimane rimosse "
+      f"({len(merged_granger)} settimane usate per la stima)")
+
 granger_results = {}
 
 
@@ -136,7 +161,7 @@ def _bar_color(p):
 
 
 for fuel_col, fuel_name in [("d_log_benzina", "Benzina"), ("d_log_diesel", "Diesel")]:
-    data2 = merged_d[[fuel_col, "d_log_brent"]].dropna()
+    data2 = merged_granger[[fuel_col, "d_log_brent"]].dropna()
     try:
         gc = grangercausalitytests(data2, maxlag=MAX_LAG, verbose=False)
     except Exception as e:
@@ -248,9 +273,10 @@ for fuel_name, (dcol, col4w, fc) in FUELS_RF.items():
     n, k      = len(y), 3
 
     try:
-        glsar_res = GLSAR(y, X, rho=1).iterative_fit(maxiter=10)
+        glsar_model = GLSAR(y, X, rho=1)
+        glsar_res   = glsar_model.iterative_fit(maxiter=10)
         b_up, b_down = glsar_res.params[1], glsar_res.params[2]
-        rho_ar       = float(glsar_res.rho)
+        rho_ar       = float(glsar_model.rho)   # ← dal modello, non dai risultati
         cov_nw       = cov_hac(glsar_res, nlags=4)
         method       = "GLSAR-AR(1)+HAC"
     except Exception as e:
@@ -593,12 +619,449 @@ for event_name, cfg in EVENTS.items():
 pd.DataFrame(selection_rows).to_csv("data/regression_selection.csv", index=False)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FIGURA RIASSUNTIVA (6 pannelli)
+# §7. WELCH T-TEST — margine lordo pre vs post shock
+#     H0: μ_margine_pre = μ_margine_post  (nessun aumento del crack spread)
+#     Test di Welch (varianze non assunte uguali) sul margine lordo calcolato come:
+#       margine = prezzo_pompa_senza_tasse - brent_eur_per_litro
+#     Questo test è AUSILIARIO e complementare allo z-score BH di script 02.
+#     Rif: Welch (1947); consigliato su Granger quando n è piccolo per evento.
 # ─────────────────────────────────────────────────────────────────────────────
+print("\n" + "=" * 65)
+print("§7. WELCH T-TEST — margine lordo pre vs post shock")
+print("    H0: media margine pre == media margine post")
+print("=" * 65)
+
+BRENT_L_FACTOR = 159.0  # litri per barile (barrel → litro)
+
+# ── Normalizzazione unità pompa ───────────────────────────────────────────────
+# benzina_4w / diesel_4w sono in milli-EUR/L (median > 10) oppure EUR/L.
+# STESSA LOGICA di 02_core_analysis.py §C per coerenza.
+# Senza questa correzione il margine sarebbe in unità miste → Δ ~300-400 invece di ~0.3-0.4.
+for _raw_col, _eur_l_col in [("benzina_4w", "benzina_eur_l_s03"),
+                               ("diesel_4w",  "diesel_eur_l_s03")]:
+    if _raw_col in merged.columns:
+        _med = merged[_raw_col].dropna().median()
+        _uf  = 1000.0 if _med > 10 else 1.0
+        merged[_eur_l_col] = merged[_raw_col] / _uf
+
+# Calcola i margini nel dataset principale (EUR/L normalizzati)
+for fuel_name, eur_l_col in [("Benzina", "benzina_eur_l_s03"),
+                               ("Diesel",  "diesel_eur_l_s03")]:
+    margin_col = f"margine_{fuel_name.lower()}"
+    if eur_l_col in merged.columns and "brent_eur" in merged.columns:
+        merged[margin_col] = merged[eur_l_col] - merged["brent_eur"] / BRENT_L_FACTOR
+
+FUELS_MARGIN = {
+    "Benzina": "margine_benzina",
+    "Diesel":  "margine_diesel",
+}
+
+ttest_rows = []
+
+for event_name, cfg in EVENTS.items():
+    shock = cfg["shock"]
+    for fuel_name, margin_col in FUELS_MARGIN.items():
+        if margin_col not in merged.columns:
+            print(f"  Colonna {margin_col} non trovata — skip")
+            continue
+
+        pre  = merged.loc[cfg["pre_start"]:shock, margin_col].dropna()
+        post = merged.loc[shock:cfg["post_end"],  margin_col].dropna()
+
+        if len(pre) < 4 or len(post) < 4:
+            print(f"  {event_name} | {fuel_name}: campioni troppo piccoli — skip")
+            continue
+
+        t_stat, p_val = stats.ttest_ind(pre.values, post.values, equal_var=False)
+        cohens_d = (post.mean() - pre.mean()) / np.sqrt(
+            (pre.std() ** 2 + post.std() ** 2) / 2
+        )
+        # IC 95% sulla differenza delle medie (approssimazione Welch-Satterthwaite)
+        se_diff = np.sqrt(pre.var() / len(pre) + post.var() / len(post))
+        ci_lo = (post.mean() - pre.mean()) - 1.96 * se_diff
+        ci_hi = (post.mean() - pre.mean()) + 1.96 * se_diff
+
+        row = {
+            "Evento":         event_name,
+            "Carburante":     fuel_name,
+            "n_pre":          len(pre),
+            "n_post":         len(post),
+            "mean_pre":       round(pre.mean(),  4),
+            "mean_post":      round(post.mean(), 4),
+            "delta_mean":     round(post.mean() - pre.mean(), 4),
+            "CI_95_low":      round(ci_lo, 4),
+            "CI_95_high":     round(ci_hi, 4),
+            "t_stat":         round(t_stat, 4),
+            "p_value":        round(p_val,  6),
+            "cohens_d":       round(cohens_d, 3),
+            "H0": "RIFIUTATA" if p_val < ALPHA else "non rifiutata",
+        }
+        ttest_rows.append(row)
+        print(f"  {event_name.split('(')[0].strip():<25} | {fuel_name:<8}: "
+              f"Δ={row['delta_mean']:+.4f} EUR/l  "
+              f"t={t_stat:.3f}  p={p_val:.4f} {_stars(p_val)}  "
+              f"d={cohens_d:.2f}  → H0 {row['H0']}")
+
+if ttest_rows:
+    pd.DataFrame(ttest_rows).to_csv("data/ttest_margin.csv", index=False)
+    print(f"\n  Salvato: data/ttest_margin.csv ({len(ttest_rows)} test)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §8. DIFFERENCE-IN-DIFFERENCES (DiD) — Italia vs Germania e Francia
+#     Modello OLS:
+#       M_{c,t} = α + β1·Italy_c + β2·Post_t + δ·(Italy_c × Post_t) + ε
+#     δ = estimatore DiD: variazione del margine IT *relativa* al paese controllo
+#         dopo lo shock → isola effetto specifico al mercato italiano
+#
+#     Due paesi di controllo:
+#       • Germania (DE) — principale, grande economia manifatturiera
+#       • Francia  (FR) — secondo controllo, economia paragonabile.
+#           NOTA: nel 2022 la Francia ha introdotto una "ristourne carburant"
+#           (~0.15–0.18 €/l, set–dic 2022) che può comprimere artificialmente
+#           il margine osservato FR. I risultati DiD IT vs FR per Ucraina 2022
+#           vanno interpretati con cautela (politica fiscale confondente).
+#           Rif: Décret n°2022-1153 (23 ago 2022); DGEC rapporto 2022.
+#
+#     Strategia dati: riutilizza il file EU Oil Bulletin già scaricato in §1
+#     (data/eu_oil_bulletin_history.xlsx), estrae colonne DE e FR.
+#     Se il file non esiste → skip con nota.
+#     Rif: Angrist & Pischke (2009), cap. 5; Card & Krueger (1994).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Configurazione paesi di controllo ───────────────────────────────────────
+# Aggiungere qui nuovi paesi se disponibili nell'EU Oil Bulletin.
+# "prefissi_col": liste di prefissi colonna (uppercase) per identificare le
+#   colonne benzina/diesel del paese nel foglio EU Oil Bulletin.
+# "nota": stringa di avvertenza metodologica (None = nessuna).
+DID_CONTROLS = {
+    "Germania": {
+        "prefissi_col": ["DE", "GERMANY", "DEUTSCH"],
+        "nota": None,
+    },
+    "Francia": {
+        "prefissi_col": ["FR", "FRANCE", "FRENCH"],
+        "nota": ("⚠ Francia 2022: ristourne carburant gov. ~0.15–0.18 €/l "
+                 "(set–dic 2022) → margine FR compresso; DiD IT vs FR "
+                 "per Ucraina 2022 da interpretare con cautela"),
+    },
+}
+
+print("\n" + "=" * 65)
+print("§8. DIFFERENCE-IN-DIFFERENCES — Italia vs Germania e Francia")
+print("    δ = variazione margine IT relativa al paese controllo post-shock")
+print("=" * 65)
+
+did_rows = []
+CONTROL_PUMPS = {}   # { nome_paese: DataFrame con colonne margine_benzina, margine_diesel }
+
+def _safe_sheet_names_did(path):
+    wb = _opxl.load_workbook(path, read_only=True, data_only=True)
+    names = wb.sheetnames
+    wb.close()
+    return names
+
+def _safe_read_sheet_did(path, sheet_name):
+    wb = _opxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb[sheet_name]
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    wb.close()
+    if not rows:
+        return pd.DataFrame()
+    header_idx = next((i for i, r in enumerate(rows) if any(v is not None for v in r)), 0)
+    headers = [str(h).strip() if h is not None else f"_col{i}"
+               for i, h in enumerate(rows[header_idx])]
+    df = pd.DataFrame(rows[header_idx + 1:], columns=headers)
+    idx_col = headers[0]
+    df[idx_col] = pd.to_datetime(df[idx_col], errors="coerce")
+    df = df.set_index(idx_col)
+    return df[df.index.notna()].sort_index()
+
+EU_HIST_FILE = "data/eu_oil_bulletin_history.xlsx"
+de_pump_loaded = False
+
+try:
+    sheet_names_eu = _safe_sheet_names_did(EU_HIST_FILE)
+
+    # Cerca il foglio senza tasse (stessa logica di 01_data_pipeline.py)
+    def _find_notax(names):
+        for s in names:
+            su = s.upper()
+            if any(k in su for k in ["WO TAX", "WITHOUT", "NO TAX", "NOTAX", "WO TAXES"]):
+                return s
+        return names[1] if len(names) > 1 else names[0]
+
+    notax_sheet = _find_notax(sheet_names_eu)
+    df_eu = _safe_read_sheet_did(EU_HIST_FILE, notax_sheet)
+    df_eu = df_eu.apply(pd.to_numeric, errors="coerce")
+
+    # Colonne DE (Germania)
+    de_all = [c for c in df_eu.columns if str(c).upper().startswith("DE")
+              or "GERMANY" in str(c).upper() or "DEUTSCH" in str(c).upper()]
+    de_b = [c for c in de_all if any(k in str(c).lower()
+            for k in ["95", "benz", "petrol", "gasol", "euro"])]
+    de_d = [c for c in de_all if any(k in str(c).lower()
+            for k in ["diesel", "gas_oil", "gasoil"])]
+    if not de_b and len(de_all) >= 1:
+        de_b = [de_all[0]]
+    if not de_d and len(de_all) >= 2:
+        de_d = [de_all[1]]
+
+    if de_b and de_d:
+        de_pump = pd.concat([
+            df_eu[de_b[0]].rename("benzina_eur_l"),
+            df_eu[de_d[0]].rename("diesel_eur_l"),
+        ], axis=1)
+        de_pump = de_pump[de_pump.index >= "2019-01-01"].dropna(how="all")
+        de_pump = de_pump.resample("W-MON").mean()
+        # Normalizza unità DE
+        for _col in ["benzina_eur_l", "diesel_eur_l"]:
+            if _col in de_pump.columns:
+                _med = de_pump[_col].dropna().median()
+                de_pump[_col] = de_pump[_col] / (1000.0 if _med > 10 else 1.0)
+        # Calcola margini DE (stesso brent condiviso)
+        brent_aligned = merged["brent_eur"].reindex(de_pump.index).ffill(limit=4)
+        de_pump["margine_benzina"] = de_pump["benzina_eur_l"] - brent_aligned / BRENT_L_FACTOR
+        de_pump["margine_diesel"]  = de_pump["diesel_eur_l"]  - brent_aligned / BRENT_L_FACTOR
+        DE_PUMP = de_pump
+        de_pump_loaded = True
+        print(f"  Germania: {len(de_pump.dropna())} settimane caricate "
+              f"({de_b[0]}, {de_d[0]})")
+    else:
+        print(f"  Colonne DE non trovate nel foglio '{notax_sheet}' — DiD skip")
+
+except FileNotFoundError:
+    print(f"  {EU_HIST_FILE} non trovato — eseguire prima 01_data_pipeline.py")
+except Exception as e:
+    print(f"  Errore caricamento dati DE: {e} — DiD skip")
+
+if de_pump_loaded and isinstance(DE_PUMP, pd.DataFrame) and len(DE_PUMP) > 0:
+    import statsmodels.api as sm
+
+    FUELS_DID = {
+        "Benzina": ("margine_benzina", "#d6604d"),
+        "Diesel":  ("margine_diesel",  "#31a354"),
+    }
+
+    for event_name, cfg in EVENTS.items():
+        shock      = cfg["shock"]
+        pre_start  = cfg["pre_start"]
+        post_end   = cfg["post_end"]
+
+        for fuel_name, (margin_col, fc) in FUELS_DID.items():
+            if margin_col not in merged.columns or margin_col not in DE_PUMP.columns:
+                continue
+
+            # Costruisci panel IT + DE nella finestra evento
+            it_pre  = merged.loc[pre_start:shock,    margin_col].dropna()
+            it_post = merged.loc[shock:post_end,      margin_col].dropna()
+            de_pre  = DE_PUMP.loc[pre_start:shock,    margin_col].dropna()
+            de_post = DE_PUMP.loc[shock:post_end,     margin_col].dropna()
+
+            if any(len(s) < 3 for s in [it_pre, it_post, de_pre, de_post]):
+                continue
+
+            # ── Parallel trends test (pre-shock only) ────────────────────────
+            # H0: IT e DE hanno lo stesso trend lineare nel periodo pre-shock.
+            # Modello: M = α + β1·Italy + β2·t + β3·(Italy×t) + ε
+            # Test su β3: se significativo → trend divergenti → PTA violata.
+            # Rif: Callaway & Sant'Anna (2021); Roth (2022).
+            pt_pass = None
+            pt_pvalue = np.nan
+            try:
+                # Costruisci panel solo pre-shock con indice temporale centrato
+                all_pre_dates = it_pre.index.union(de_pre.index).sort_values()
+                t_vals_it = np.array([(d - all_pre_dates[0]).days for d in it_pre.index], dtype=float)
+                t_vals_de = np.array([(d - all_pre_dates[0]).days for d in de_pre.index], dtype=float)
+                rows_pt = (
+                    [(1, t, v) for t, v in zip(t_vals_it, it_pre.values)] +
+                    [(0, t, v) for t, v in zip(t_vals_de, de_pre.values)]
+                )
+                df_pt = pd.DataFrame(rows_pt, columns=["Italy", "t", "Margin"])
+                df_pt["Italy_x_t"] = df_pt["Italy"] * df_pt["t"]
+                import statsmodels.api as sm
+                X_pt = sm.add_constant(df_pt[["Italy", "t", "Italy_x_t"]].values)
+                ols_pt = sm.OLS(df_pt["Margin"].values, X_pt).fit(cov_type="HC3")
+                pt_pvalue = float(ols_pt.pvalues[3])   # coeff β3 = Italy×t
+                pt_pass   = pt_pvalue >= ALPHA          # True = PTA non rigettata
+                pt_label  = (f"PTA p={pt_pvalue:.3f} {'✓ non rigettata' if pt_pass else '✗ VIOLATA'}")
+                print(f"    Parallel Trends: {pt_label}")
+            except Exception as e:
+                print(f"    Parallel Trends: errore ({e})")
+
+            rows_panel = (
+                [(1, 0, v) for v in it_pre]  +   # IT pre
+                [(1, 1, v) for v in it_post] +    # IT post
+                [(0, 0, v) for v in de_pre]  +    # DE pre
+                [(0, 1, v) for v in de_post]       # DE post
+            )
+            df_panel = pd.DataFrame(rows_panel, columns=["Italy", "Post", "Margin"])
+            df_panel["Italy_x_Post"] = df_panel["Italy"] * df_panel["Post"]
+
+            X_did = sm.add_constant(
+                df_panel[["Italy", "Post", "Italy_x_Post"]].values
+            )
+            ols_did = sm.OLS(df_panel["Margin"].values, X_did).fit(
+                cov_type="HC3"  # errori robusti all'eteroschedasticità
+            )
+            # δ è il coefficiente di Italy_x_Post (indice 3)
+            delta      = ols_did.params[3]
+            se_delta   = ols_did.bse[3]
+            t_did      = ols_did.tvalues[3]
+            p_did      = ols_did.pvalues[3]
+            ci_lo_did  = delta - 1.96 * se_delta
+            ci_hi_did  = delta + 1.96 * se_delta
+
+            row_did = {
+                "Evento":             event_name,
+                "Carburante":         fuel_name,
+                "n_IT_pre":           len(it_pre),
+                "n_IT_post":          len(it_post),
+                "n_DE_pre":           len(de_pre),
+                "n_DE_post":          len(de_post),
+                "PTA_pvalue":         round(pt_pvalue, 4) if not np.isnan(pt_pvalue) else "N/A",
+                "PTA_non_rigettata":  pt_pass,
+                "delta_DiD":          round(delta,    4),
+                "SE_HC3":             round(se_delta, 4),
+                "CI_95_low":          round(ci_lo_did, 4),
+                "CI_95_high":         round(ci_hi_did, 4),
+                "t_stat":             round(t_did,  3),
+                "p_value":            round(p_did,  6),
+                "R2":                 round(ols_did.rsquared, 3),
+                "H0":                 "RIFIUTATA" if p_did < ALPHA else "non rifiutata",
+            }
+            did_rows.append(row_did)
+            pta_warn = " ⚠ PTA violata" if pt_pass is False else ""
+            print(f"  {event_name.split('(')[0].strip():<25} | {fuel_name:<8}: "
+                  f"δ={delta:+.4f} EUR/l  SE={se_delta:.4f}  "
+                  f"p={p_did:.4f} {_stars(p_did)}  → H0 {row_did['H0']}{pta_warn}")
+
+    if did_rows:
+        pd.DataFrame(did_rows).to_csv("data/did_results.csv", index=False)
+        print(f"\n  Salvato: data/did_results.csv ({len(did_rows)} stime DiD)")
+else:
+    print("  DiD non eseguito (dati DE non disponibili).")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FIGURA §7–§8: t-test e DiD (plots/09_ttest_did.png)
+# ─────────────────────────────────────────────────────────────────────────────
+print("\nGenerazione figura §7-§8 (t-test + DiD)...")
+
+_n_cols = 2
+_n_rows = 1 + (1 if did_rows else 0)
+fig9, axes9 = plt.subplots(_n_rows, _n_cols,
+                            figsize=(14, 5 * _n_rows),
+                            squeeze=False)
+fig9.suptitle("Test aggiuntivi — Anomalia margine carburanti Italia (evidenza ausiliaria)",
+              fontsize=13, fontweight="bold")
+
+# Pannello A: Welch t-test — Δmargine medio per evento × carburante
+ax_t = axes9[0, 0]
+if ttest_rows:
+    df_tt = pd.DataFrame(ttest_rows)
+    labels_tt  = [f"{r['Evento'].split('(')[0].strip()}\n{r['Carburante']}"
+                  for _, r in df_tt.iterrows()]
+    deltas_tt  = df_tt["delta_mean"].values
+    ci_lo_arr  = df_tt["delta_mean"].values - df_tt["CI_95_low"].values
+    ci_hi_arr  = df_tt["CI_95_high"].values - df_tt["delta_mean"].values
+    colors_tt  = ["#e74c3c" if p < ALPHA else "#95a5a6"
+                  for p in df_tt["p_value"].values]
+    bars_tt = ax_t.barh(range(len(labels_tt)), deltas_tt,
+                         color=colors_tt, edgecolor="black", lw=0.5, alpha=0.85)
+    for i, (lo, hi) in enumerate(zip(ci_lo_arr, ci_hi_arr)):
+        ax_t.errorbar(deltas_tt[i], i,
+                      xerr=[[lo], [hi]],
+                      fmt="none", color="black", capsize=5, lw=1.5)
+    ax_t.axvline(0, color="black", lw=1.0, ls="--")
+    ax_t.set_yticks(range(len(labels_tt)))
+    ax_t.set_yticklabels(labels_tt, fontsize=8)
+    ax_t.set_xlabel("Δ Margine medio post−pre (EUR/litro)", fontsize=10)
+    ax_t.set_title("Welch t-test sul margine lordo\n(IC 95%  |  Rosso = p<0.05)",
+                   fontsize=11, fontweight="bold")
+    for i, (bar, row) in enumerate(zip(bars_tt, df_tt.itertuples())):
+        ax_t.text(max(deltas_tt[i], 0) + 0.001, i,
+                  _stars(row.p_value), va="center", fontsize=9,
+                  color="#8b1a1a" if row.p_value < ALPHA else "#777")
+
+# Pannello B: Welch — Cohen's d (effect size)
+ax_d = axes9[0, 1]
+if ttest_rows:
+    ds     = df_tt["cohens_d"].values
+    colors_d = ["#e74c3c" if p < ALPHA else "#95a5a6"
+                for p in df_tt["p_value"].values]
+    ax_d.barh(range(len(labels_tt)), ds,
+              color=colors_d, edgecolor="black", lw=0.5, alpha=0.85)
+    ax_d.axvline(0.2, color="gray",     lw=1.2, ls=":", label="piccolo (0.2)")
+    ax_d.axvline(0.5, color="orange",   lw=1.2, ls=":", label="medio (0.5)")
+    ax_d.axvline(0.8, color="#e74c3c",  lw=1.2, ls=":", label="grande (0.8)")
+    ax_d.set_yticks(range(len(labels_tt)))
+    ax_d.set_yticklabels(labels_tt, fontsize=8)
+    ax_d.set_xlabel("Cohen's d (effect size)", fontsize=10)
+    ax_d.set_title("Effect size Welch t-test\n(Cohen's d — soglie standard)",
+                   fontsize=11, fontweight="bold")
+    ax_d.legend(fontsize=8, loc="lower right")
+
+# Pannello C–D: DiD δ con IC 95% (se disponibile)
+if did_rows:
+    df_did = pd.DataFrame(did_rows)
+    labels_did  = [f"{r['Evento'].split('(')[0].strip()}\n{r['Carburante']}"
+                   for _, r in df_did.iterrows()]
+    deltas_did  = df_did["delta_DiD"].values
+    ci_lo_did_a = df_did["delta_DiD"].values - df_did["CI_95_low"].values
+    ci_hi_did_a = df_did["CI_95_high"].values - df_did["delta_DiD"].values
+    colors_did  = ["#e74c3c" if p < ALPHA else "#95a5a6"
+                   for p in df_did["p_value"].values]
+
+    ax_did1 = axes9[1, 0]
+    bars_did = ax_did1.barh(range(len(labels_did)), deltas_did,
+                             color=colors_did, edgecolor="black", lw=0.5, alpha=0.85)
+    for i, (lo, hi) in enumerate(zip(ci_lo_did_a, ci_hi_did_a)):
+        ax_did1.errorbar(deltas_did[i], i,
+                         xerr=[[lo], [hi]],
+                         fmt="none", color="black", capsize=5, lw=1.5)
+    ax_did1.axvline(0, color="black", lw=1.0, ls="--")
+    ax_did1.set_yticks(range(len(labels_did)))
+    ax_did1.set_yticklabels(labels_did, fontsize=8)
+    ax_did1.set_xlabel("δ DiD (EUR/litro, IC 95% HC3)", fontsize=10)
+    ax_did1.set_title("DiD δ: variazione margine IT vs DE\n(Rosso = p<0.05  |  SE robusti HC3)",
+                      fontsize=11, fontweight="bold")
+
+    ax_did2 = axes9[1, 1]
+    # Mostra differenze medie IT vs DE pre/post per Ucraina 2022 (primo evento)
+    ev0 = list(EVENTS.keys())[0]
+    for fuel_name, (margin_col, fc) in FUELS_DID.items() if de_pump_loaded else []:
+        if margin_col not in merged.columns or margin_col not in DE_PUMP.columns:
+            continue
+        cfg0 = EVENTS[ev0]
+        it_s = merged.loc[cfg0["pre_start"]:cfg0["post_end"], margin_col].dropna()
+        de_s = DE_PUMP.loc[cfg0["pre_start"]:cfg0["post_end"], margin_col].dropna()
+        ax_did2.plot(it_s.index, it_s.values, color=fc,    lw=2.0, label=f"IT {fuel_name}")
+        ax_did2.plot(de_s.index, de_s.values, color=fc, lw=1.5,
+                     ls="--", alpha=0.6, label=f"DE {fuel_name}")
+    ax_did2.axvline(EVENTS[ev0]["shock"], color="black", lw=1.5, ls="--")
+    ax_did2.text(EVENTS[ev0]["shock"] + pd.Timedelta(days=5),
+                 ax_did2.get_ylim()[1] if ax_did2.get_ylim()[1] != 0 else 0.05,
+                 ev0.split("(")[0].strip(), rotation=90, fontsize=8, color="black",
+                 va="top")
+    ax_did2.set_ylabel("Margine lordo (EUR/litro)", fontsize=10)
+    ax_did2.set_title(f"Margine IT vs DE — {ev0}\n(linea continua = IT, tratteggio = DE)",
+                      fontsize=11, fontweight="bold")
+    ax_did2.legend(fontsize=9)
+    ax_did2.xaxis.set_major_formatter(mdates.DateFormatter("%b %y"))
+    ax_did2.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    plt.setp(ax_did2.xaxis.get_majorticklabels(), rotation=45)
+
+plt.tight_layout(pad=2.0)
+plt.savefig("plots/09_ttest_did.png", dpi=DPI, bbox_inches="tight")
+plt.close()
+print("  Salvato: plots/09_ttest_did.png")
+
+
 print("\nGenerazione figura riassuntiva §3-§5...")
 
 fig, axes = plt.subplots(2, 3, figsize=(18, 11))
-fig.suptitle("Test statistici di supporto — Speculazione carburanti Italia",
+fig.suptitle("Test statistici di supporto — Anomalia margine carburanti Italia (evidenza ausiliaria)",
              fontsize=13, fontweight="bold")
 
 # Pannello 1: CCF
@@ -721,11 +1184,15 @@ print("  §3 KS/ANOVA/Chow: data/{ks,anova,chow}_results.csv")
 print("  §4 CCF:      (nel plot riassuntivo)")
 print("  §5 Bootstrap: data/bootstrap_ci.csv")
 print("  §6 Sel. reg.: data/regression_selection.csv")
-print("  Figura:      plots/06_statistical_tests.png")
+print("  §7 t-test:   data/ttest_margin.csv")
+print("  §8 DiD:      data/did_results.csv (se dati DE disponibili)")
+print("  Figure:      plots/06_statistical_tests.png")
+print("               plots/09_ttest_did.png")
 print("\n  NOTE:")
-print("  - Granger e R&F sono EVIDENZE AUSILIARIE, non test diretti di H0")
+print("  - Granger, R&F, t-test, DiD sono EVIDENZE AUSILIARIE")
 print("  - H0 (anomalia margine) è testata in 02_core_analysis.py §D")
 print("  - BH correction FDR 5% applicata in script 02 sui test primari")
+print("  - DiD richiede data/eu_oil_bulletin_history.xlsx (da script 01)")
 
 plt.rcParams.update(plt.rcParamsDefault)
 print("\nScript 03 completato.")

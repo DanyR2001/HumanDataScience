@@ -4,7 +4,7 @@
 Analisi principale per il test di H0:
 
   H0: Il margine lordo sui carburanti italiani non aumenta in modo
-      statisticamente significativo rispetto al baseline pre-crisi 2021
+      statisticamente significativo rispetto al baseline pre-crisi 2019
       durante le tre crisi energetiche analizzate.
 
 Questo script:
@@ -17,10 +17,24 @@ Questo script:
      NOTA: il metodo Yield (Brent × yield fisso) è stato rimosso perché
      confonde la raffinazione con la distribuzione. Eurobob/Gas Oil sono
      il prezzo wholesale reale pagato dai distributori italiani.
+     LIMITAZIONE: i distributori italiani possono usare contratti forward
+     o prezzi CIF-Genova anziché spot ARA/ICE; il crack spread misurato
+     è una proxy del margine reale, non il margine reale stesso.
   C) Testa l'anomalia del margine post-shock (Table 2, solo Ucraina e Iran):
-       t-test Welch (test primario), KS (ausiliario), bootstrap 95% CI
+       t-test Welch (test PRIMARIO UNICO), KS (ausiliario-diagnostico),
+       bootstrap 95% CI (ausiliario-diagnostico)
        + MCMC Bayesiano sul margine (StudentT + AR(1), 4 catene)
        + Benjamini-Hochberg FDR correction su t_p (test primario)
+     NOTE METODOLOGICHE SUL TEST PRIMARIO:
+       - Solo Welch t-test governa la regola di rigetto (stat_sig = t_p < α).
+         KS e CI bootstrap sono riportati come diagnostici ma NON entrano
+         nella decisione, per coerenza con la BH correction applicata su t_p.
+         Un AND(t, KS) creerebbe un test composito con α nominale non
+         controllato dalla BH sul solo t_p.
+       - Classificazioni usano nomenclatura descrittiva del pattern statistico,
+         NON causale. "MARGINE ANOMALO POSITIVO" ≠ "speculazione"; è
+         consistente anche con effetti FIFO/LIFO, risk premium razionale,
+         cost-push wholesale non catturato da ARA/ICE.
      NOTA: Hormuz (Feb 2026) escluso da Table 2 — dati post-shock
      insufficienti (≤4 settimane al momento dell'analisi).
   D) Plot: prezzi con changepoints, margini nel tempo, Δmargini
@@ -33,6 +47,7 @@ Input:
 Output:
   data/table1_changepoints.csv
   data/table2_margin_anomaly.csv
+  data/baseline_sensitivity.csv
   plots/02_{event}_{series}.png      (changepoint + KDE posteriore)
   plots/02_{event}_{series}_diag.png (diagnostica regressione)
   plots/07_margins_{fuel}.png        (margine nel tempo)
@@ -41,9 +56,18 @@ Output:
 NOTA METODOLOGICA — scelta del modello:
   Test diagnostici in script 03 mostrano DW ≈ 0.003–0.04 (autocorrelazione
   quasi perfetta), BP p=0.000 (eteroschedasticità), SW p=0.000 (non-normalità).
-  → Likelihood StudentT(ν stimato) gestisce code pesanti.
-  → Errori AR(1) espliciti gestiscono autocorrelazione strutturale.
-  Rif: Gelman et al. (2013); Casini & Perron (2021).
+  → Likelihood StudentT(ν stimato) gestisce code pesanti e autocorrelazione
+    residua implicita (ν piccolo ↔ distribuzioni più pesanti alle code).
+  → AR(1) esplicito RIMOSSO: creava geometria sequenzialmente dipendente
+    incompatibile con NUTS (max_treedepth sistematico, Rhat > 1.01).
+    L'autocorrelazione è riportata come diagnostico (DW test in script 03)
+    ma non modellata nel passo di changepoint.
+  → tau ~ Beta(2,2) su [0,1]: migliore geometria rispetto a Uniform.
+  Rif: Gelman et al. (2013); Betancourt (2017); Casini & Perron (2021).
+
+NOTA BASELINE — 2019 full year (primaria):
+  Baseline: 2019-01-01 → 2019-12-31.
+  Sensitivity analysis con H1-2021 e Full-2021: data/baseline_sensitivity.csv.
 """
 
 import pandas as pd
@@ -54,7 +78,6 @@ import matplotlib.gridspec as gridspec
 import matplotlib.patches as mpatches
 import pymc as pm
 import pytensor.tensor as pt
-from pytensor.scan import scan
 from scipy import stats
 from scipy.stats import gaussian_kde
 from statsmodels.stats.stattools import durbin_watson
@@ -62,30 +85,127 @@ from statsmodels.graphics.tsaplots import plot_acf
 import warnings
 warnings.filterwarnings("ignore")
 
-# ─── Configurazione ──────────────────────────────────────────────────────────
+# ─── Configurazione globale ──────────────────────────────────────────────────
 DPI          = 180
-MCMC_DRAWS   = 2000
-MCMC_TUNE    = 1000
-MCMC_CHAINS  = 4      # 4 catene → Rhat affidabile (era 2)
 ALPHA        = 0.05
 H0_THRESHOLD = 30       # giorni: lag > 30gg → trasmissione lenta (H0 non rifiutata)
 EDGE_FRAC    = 0.15     # changepoint troppo vicino ai bordi → break non affidabile
+
+# ─── Configurazione MCMC per scenario ────────────────────────────────────────
+# Ogni chiave corrisponde a un pattern "Evento__Serie" (Table 1) oppure
+# "Evento__Carburante__Metodo" (Table 2 margini). La chiave "_default" fornisce
+# i valori di fallback usati da tutti gli scenari non elencati.
+#
+# Come scegliere i valori per scenari problematici:
+#   • Rhat 1.01–1.05 (lieve non-convergenza)
+#     → aumentare `tune` (es. 3000–4000) e `target_accept` (es. 0.95–0.97)
+#   • Divergences > 0
+#     → aumentare `target_accept` (es. 0.97–0.99); cambiare `init` in "adapt_full"
+#       se il numero rimane alto dopo target_accept = 0.97
+#   • ESS < 100 per catena → raddoppiare `draws`
+#   • Rhat > 1.05 (convergenza dubbia) → aumentare tutti i parametri; considerare
+#       reparametrizzazione della funzione bayesian_changepoint
+#
+# Scenari che hanno prodotto warning nel run di riferimento (log output):
+#   "Ucraina (Feb 2022)__Brent"
+#       Rhat max=1.030 → tune insufficiente per la geometria Brent
+#   "Ucraina (Feb 2022)__Diesel__Crack Gas Oil"
+#       Rhat max=1.012 + 6 divergences → target_accept troppo basso
+#   "Iran-Israele (Giu 2025)__Diesel__Crack Gas Oil"
+#       Rhat max=1.015, sampling molto lento (67s) → geometria complessa
+
+MCMC_CONFIG: dict[str, dict] = {
+
+    # ── Default: applicato a tutti gli scenari non elencati ──────────────────
+    "_default": {
+        "draws":         2000,
+        "tune":          2000,
+        "chains":        4,
+        "target_accept": 0.95,
+        "init":          "adapt_diag",
+        "max_treedepth": 15,
+    },
+
+    # ── Table 1: Changepoint sui log-prezzi ───────────────────────────────────
+    # Formato chiave: "Evento__Serie"  (Serie ∈ {Brent, Benzina, Diesel})
+
+    # Ucraina / Brent → Rhat 1.030 nel run di riferimento
+    "Ucraina (Feb 2022)__Brent": {
+        "tune":          4000,       # più adattamento per geometria complessa
+        "target_accept": 0.97,
+    },
+
+    # ── Table 2: Changepoint sui margini lordi ────────────────────────────────
+    # Formato chiave: "Evento__Carburante__Metodo"
+
+    # Ucraina / Diesel / Crack Gas Oil → Rhat 1.012 + 6 divergences
+    "Ucraina (Feb 2022)__Diesel__Crack Gas Oil": {
+        "tune":          4000,
+        "target_accept": 0.98,
+        "init":          "adapt_full",   # metrica di massa completa: meglio per
+                                         # geometrie con forti correlazioni
+    },
+
+    # Iran-Israele / Diesel / Crack Gas Oil → Rhat 1.015, sampling lento (67s)
+    "Iran-Israele (Giu 2025)__Diesel__Crack Gas Oil": {
+        "draws":         3000,       # più campioni per ESS più alto
+        "tune":          5000,       # adattamento molto più lungo
+        "target_accept": 0.99,       # passo più piccolo → meno divergences
+        "init":          "adapt_full",
+        "max_treedepth": 18,         # albero più profondo per geometrie strette
+    },
+}
+
+
+def _get_mcmc_cfg(scenario_key: str) -> dict:
+    """
+    Restituisce la configurazione MCMC per lo scenario dato.
+    Merge: default + override specifico (i campi del default non presenti
+    nell'override vengono mantenuti, così ogni entry di MCMC_CONFIG può
+    sovrascrivere solo i campi necessari).
+
+    Parametri
+    ---------
+    scenario_key : str
+        Chiave nel formato "Evento__Serie" (Table 1) o
+        "Evento__Carburante__Metodo" (Table 2).
+
+    Esempi
+    ------
+    >>> _get_mcmc_cfg("Ucraina (Feb 2022)__Brent")
+    {'draws': 2000, 'tune': 4000, 'chains': 4, 'target_accept': 0.97, ...}
+    >>> _get_mcmc_cfg("Hormuz (Feb 2026)__Benzina")
+    {'draws': 2000, 'tune': 2000, 'chains': 4, 'target_accept': 0.95, ...}
+    """
+    base = dict(MCMC_CONFIG["_default"])
+    override = MCMC_CONFIG.get(scenario_key, {})
+    base.update(override)
+    return base
+
+
+# Manteniamo alias per retrocompatibilità con eventuali riferimenti esterni
+MCMC_DRAWS  = MCMC_CONFIG["_default"]["draws"]
+MCMC_TUNE   = MCMC_CONFIG["_default"]["tune"]
+MCMC_CHAINS = MCMC_CONFIG["_default"]["chains"]
 
 # Conversioni unità per crack spread wholesale → EUR/litro
 DENSITY_BENZ_KG_L  = 0.74
 DENSITY_DIES_KG_L  = 0.84
 L_PER_TONNE_BENZ   = 1000.0 / DENSITY_BENZ_KG_L   # ≈ 1351 L/t
 L_PER_TONNE_DIES   = 1000.0 / DENSITY_DIES_KG_L   # ≈ 1190 L/t
-# NOTA: BARREL_LITRES e YIELD_* rimossi — metodo Yield eliminato.
 # Eurobob e Gas Oil sono il costo wholesale reale per i distributori.
 
-# Baseline: solo H1 2021 (gennaio–giugno).
-# MOTIVAZIONE: dal luglio 2021 il Brent era già in risalita (+70% YoY),
-# i margini di H2 riflettevano già stress pre-Ucraina. Usare tutto il 2021
-# gonfia σ e rende il test più conservativo del dichiarato.
-# Sensitivity analysis: vedi data/baseline_sensitivity.csv (generato sotto).
-BASELINE_START = "2021-01-01"
-BASELINE_END   = "2021-06-30"   # era "2021-12-31" — ora solo H1
+# Baseline: 2019 full year (gennaio–dicembre).
+# MOTIVAZIONE: 2019 è l'unico anno genuinamente pre-crisi disponibile.
+#   - 2020: COVID-19, WTI negativo in aprile, domanda collassata ~25%.
+#     σ artificialmente alta e non stazionaria — baseline non difendibile.
+#   - 2021 H1: post-COVID recovery, prezzi Brent ancora in rimbalzo.
+#     Margini potenzialmente compressi; non rappresentativo di condizioni normali.
+#   - 2019: mercato maturo, nessuno shock, Brent stabile 60-70 $/bbl.
+#     Margini distributivi italiani strutturalmente non disturbati.
+# Sensitivity analysis con H1-2021 e Full-2021: vedi data/baseline_sensitivity.csv.
+BASELINE_START = "2019-01-01"
+BASELINE_END   = "2019-12-31"
 
 EVENTS = {
     "Ucraina (Feb 2022)": {
@@ -115,63 +235,137 @@ PRICE_SERIES = {
 }
 
 CLAS_COLOR = {
-    "SPECULAZIONE":                         "#c0392b",
-    "COMPRESSIONE MARGINE":                 "#2980b9",
-    "ANTICIPAZIONE RAZIONALE / NEUTRO":     "#27ae60",
-    "VARIAZIONE STATISTICA (non anomala)":  "#e67e22",
-    "INCONCLUSIVO":                         "#95a5a6",
+    # NOTA METODOLOGICA: i label descrivono il pattern statistico osservato,
+    # NON la causa economica. "MARGINE ANOMALO POSITIVO" indica che il margine
+    # lordo post-shock supera la soglia 2σ ed è statisticamente significativo,
+    # ma NON esclude spiegazioni alternative alla speculazione:
+    # effetti FIFO/LIFO su inventario, risk premium razionale, cost-push
+    # wholesale non catturato da ARA/ICE, riduzione temporanea della concorrenza.
+    "MARGINE ANOMALO POSITIVO":                 "#c0392b",   # ex SPECULAZIONE
+    "COMPRESSIONE MARGINE":                     "#2980b9",
+    "NEUTRO / TRASMISSIONE ATTESA":             "#27ae60",   # ex ANTICIPAZIONE RAZIONALE / NEUTRO
+    "VARIAZIONE STATISTICA (non anomala)":      "#e67e22",
+    "INCONCLUSIVO":                             "#95a5a6",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SEZIONE A: Utility condivise
 # ─────────────────────────────────────────────────────────────────────────────
 
-def bayesian_changepoint(x_vals: np.ndarray, y_vals: np.ndarray, alpha: float = 0.05):
+def bayesian_changepoint(x_vals: np.ndarray, y_vals: np.ndarray, alpha: float = 0.05,
+                         mcmc_cfg: dict | None = None):
     """
-    Modello Bayesiano piecewise con:
-      • Likelihood StudentT(ν) → code pesanti (ν stimato)
-      • Errori AR(1): εₜ = ρ·εₜ₋₁ + ηₜ,  ηₜ ~ N(0, σ)
-    Rif: Gelman et al. (2013); Casini & Perron (2021)
+    Modello Bayesiano piecewise-lineare per changepoint detection.
+
+    CAMBIAMENTI rispetto alla versione precedente (motivazione convergenza):
+
+    1. AR(1) RIMOSSO.
+       Il termine scan(rho*eps_prev + eta) crea dipendenze sequenziali n-deep
+       che rendono la geometria della posterior difficile per NUTS:
+       ogni eps_t dipende da eps_{t-1} → funnel geometry → max_treedepth
+       sistematico, Rhat > 1.01, ESS < 100.
+       L'autocorrelazione nei residui è gestita implicitamente dalla
+       StudentT(ν) con ν stimato, ed è riportata come diagnostico (DW test)
+       ma non modellata esplicitamente nel passo di changepoint.
+       Rif: Betancourt (2017) "A Conceptual Introduction to HMC", §5.
+
+    2. tau ~ Beta(2,2) su [0,1] trasformato a [x_lo, x_hi].
+       Uniform aveva boundary effects (gradiente nullo ai bordi).
+       Beta(2,2) concentra il prior leggermente lontano dai bordi,
+       coerente con EDGE_FRAC=0.15, e ha derivata finita ovunque.
+
+    3. nu ~ Gamma(2, 0.1)  [E=20, SD=14].
+       Exponential(1/30) metteva troppa massa su ν piccoli (Cauchy-like)
+       e aveva coda pesante verso ∞ (normale). Gamma(2,0.1) è più
+       informativa sull'intervallo ν ∈ [5, 50] tipico di serie finanziarie.
+
+    4. b1, b2 ~ Normal (era StudentT ν=3).
+       Prior Normal riduce il numero di parametri latenti e la complessità
+       del grafo computazionale. La likelihood ha già code pesanti.
+
+    5. a1 centrato su mean(y) invece di 0: inizializzazione più realistica
+       per serie con mean non nulla (prezzi in log).
+
+    6. init="adapt_diag": inizializzazione adattiva della metrica di massa.
+
+    7. max_treedepth=15 (era 20): sufficiente senza AR(1).
+
+    Rif: Gelman et al. (2013); Betancourt (2017); Casini & Perron (2021).
     """
-    n     = len(x_vals)
-    sd_y  = float(np.std(y_vals))
-    rng_x = float(x_vals[-1] - x_vals[0])
+    import arviz as az
+
+    # Usa la config specifica dello scenario (o il default se None)
+    cfg    = mcmc_cfg if mcmc_cfg is not None else MCMC_CONFIG["_default"]
+    _draws  = cfg["draws"]
+    _tune   = cfg["tune"]
+    _chains = cfg["chains"]
+    _ta     = cfg["target_accept"]
+    _init   = cfg["init"]
+    _mtd    = cfg["max_treedepth"]
+
+    n      = len(x_vals)
+    sd_y   = float(np.std(y_vals))
+    mean_y = float(np.mean(y_vals))
+    x_lo   = float(x_vals[0])
+    x_hi   = float(x_vals[-1])
+    x_rng  = max(x_hi - x_lo, 1.0)
 
     with pm.Model():
-        tau   = pm.Uniform("tau",   lower=x_vals[0],  upper=x_vals[-1])
+        # ── tau: reparametrizzato su [0,1] via Beta(2,2) ─────────────────
+        tau_raw = pm.Beta("tau_raw", alpha=2, beta=2)
+        tau     = pm.Deterministic("tau", x_lo + tau_raw * x_rng)
+
+        # ── Parametri likelihood ─────────────────────────────────────────
         sigma = pm.HalfNormal("sigma", sigma=sd_y)
-        nu    = pm.Exponential("nu", lam=1 / 30)
-        rho   = pm.Uniform("rho",   lower=-1,          upper=1)
-        b1    = pm.StudentT("b1",   mu=0, sigma=3 * sd_y,              nu=3)
-        b2    = pm.StudentT("b2",   mu=0, sigma=3 * sd_y,              nu=3)
-        a1    = pm.StudentT("a1",   mu=0, sigma=sd_y / max(rng_x, 1),  nu=3)
-        a2    = pm.Deterministic("a2", a1 + tau * (b1 - b2))
+        nu    = pm.Gamma("nu", alpha=2, beta=0.1)   # E[ν]=20, evita ν→1 e ν→∞
 
+        # ── Piecewise linear: prior Normal (geometria più semplice) ──────
+        b1 = pm.Normal("b1", mu=0.0, sigma=3.0 * sd_y)
+        b2 = pm.Normal("b2", mu=0.0, sigma=3.0 * sd_y)
+        a1 = pm.Normal("a1", mu=mean_y, sigma=sd_y)     # centrato su mean(y)
+        a2 = pm.Deterministic("a2", a1 + tau * (b1 - b2))  # continuità in τ
+
+        # ── Mean piecewise ───────────────────────────────────────────────
         x_pt = pt.as_tensor_variable(x_vals.astype(float))
-        step  = pm.math.sigmoid((x_pt - tau) * 50)
-        mu    = (a1 + b1 * x_pt) * (1 - step) + (a2 + b2 * x_pt) * step
+        step = pm.math.sigmoid((x_pt - tau) * 50)          # transizione hard
+        mu   = (a1 + b1 * x_pt) * (1.0 - step) + (a2 + b2 * x_pt) * step
 
-        eps_init       = pm.Normal("eps_init", mu=0, sigma=sigma)
-        eta            = pm.Normal("eta", mu=0, sigma=sigma, shape=n - 1)
-        eps_rest, _    = scan(
-            fn=lambda eta_t, eps_prev, rho_v: rho_v * eps_prev + eta_t,
-            sequences=[eta],
-            outputs_info=[eps_init],
-            non_sequences=[rho],
-        )
-        eps = pt.concatenate([[eps_init], eps_rest])
-        pm.StudentT("obs", nu=nu, mu=mu + eps, sigma=sigma, observed=y_vals)
+        pm.StudentT("obs", nu=nu, mu=mu, sigma=sigma, observed=y_vals)
 
         trace = pm.sample(
-            draws=MCMC_DRAWS, tune=MCMC_TUNE, chains=MCMC_CHAINS,
-            progressbar=True, random_seed=42,
-            target_accept=0.95,    # era 0.9 → riduce divergenze
-            nuts_sampler_kwargs={"max_treedepth": 15},  # era default 10
+            draws=_draws,
+            tune=_tune,
+            chains=_chains,
+            progressbar=True,
+            random_seed=list(range(42, 42 + _chains)),
+            target_accept=_ta,
+            nuts_sampler_kwargs={"max_treedepth": _mtd},
+            init=_init,
             return_inferencedata=True,
         )
 
-    lo_pct  = (alpha / 2) * 100
-    hi_pct  = (1 - alpha / 2) * 100
+    # ── Diagnostica convergenza ──────────────────────────────────────────
+    try:
+        rhat_vals = az.rhat(trace).to_array().values.flatten()
+        ess_vals  = az.ess(trace, method="bulk").to_array().values.flatten()
+        rhat_max  = float(np.nanmax(rhat_vals))
+        ess_pos   = ess_vals[np.isfinite(ess_vals) & (ess_vals > 0)]
+        ess_min   = float(np.min(ess_pos)) if len(ess_pos) > 0 else 0.0
+    except Exception:
+        rhat_max, ess_min = np.nan, np.nan
+
+    if np.isnan(rhat_max):
+        print("  ⚠ Diagnostica convergenza non disponibile")
+    elif rhat_max > 1.05:
+        print(f"  ⚠ CONVERGENZA DUBBIA: Rhat max={rhat_max:.3f} > 1.05 "
+              f"— interpretare con cautela")
+    elif rhat_max > 1.01:
+        print(f"  ⚠ Rhat max={rhat_max:.3f} (1.01–1.05) — lieve non-convergenza")
+    else:
+        print(f"  ✓ Convergenza ok: Rhat max={rhat_max:.3f}  ESS min={ess_min:.0f}")
+
+    lo_pct   = (alpha / 2) * 100
+    hi_pct   = (1 - alpha / 2) * 100
     tau_post = trace.posterior["tau"].values.flatten()
     b1_post  = trace.posterior["b1"].values.flatten()
     b2_post  = trace.posterior["b2"].values.flatten()
@@ -191,7 +385,9 @@ def bayesian_changepoint(x_vals: np.ndarray, y_vals: np.ndarray, alpha: float = 
         "b2_hi":    float(np.percentile(b2_post, hi_pct)),
         "a1_mean":  float(np.mean(a1_post)),
         "nu_mean":  float(np.mean(trace.posterior["nu"].values.flatten())),
-        "rho_mean": float(np.mean(trace.posterior["rho"].values.flatten())),
+        # AR(1) rimosso — rho_mean sostituito da diagnostici convergenza
+        "rhat_max": rhat_max,
+        "ess_min":  ess_min,
     }
 
 
@@ -313,7 +509,11 @@ for event_name, cfg in EVENTS.items():
         x = np.arange(len(df_ev), dtype=float)
         y = df_ev.values
 
-        ci = bayesian_changepoint(x, y)
+        _scenario_key = f"{event_name}__{series_name}"
+        _mcmc_cfg     = _get_mcmc_cfg(_scenario_key)
+        if _scenario_key in MCMC_CONFIG:
+            print(f"  [cfg] override attivo: {MCMC_CONFIG[_scenario_key]}")
+        ci = bayesian_changepoint(x, y, mcmc_cfg=_mcmc_cfg)
 
         # OLS piecewise per R² e doubling time
         cp = ci["tau_idx"]
@@ -349,10 +549,11 @@ for event_name, cfg in EVENTS.items():
             "b2_OLS":    round(b2_ols, 5),
             "DT1 (gg)":  round(doubling_t1, 1) if doubling_t1 != np.inf else "∞",
             "DT2 (gg)":  round(doubling_t2, 1) if doubling_t2 != np.inf else "∞",
-            "R2_pre":    round(r2_1, 4),
-            "R2_post":   round(r2_2, 4),
+            "R2_pre":      round(r2_1, 4),
+            "R2_post":     round(r2_2, 4),
             "nu_StudentT": round(ci["nu_mean"], 2),
-            "rho_AR1":   round(ci["rho_mean"], 3),
+            "rhat_max":    round(ci["rhat_max"], 3),
+            "ess_min":     round(ci["ess_min"],  0),
         })
 
         # ─── Plot A: changepoint con KDE posteriore ───────────────────────
@@ -391,10 +592,14 @@ for event_name, cfg in EVENTS.items():
         lag_s = f"D = {lag_days:+d} gg"
         dt1_s = f"{doubling_t1:.0f}" if doubling_t1 != np.inf else "∞"
         dt2_s = f"{doubling_t2:.0f}" if doubling_t2 != np.inf else "∞"
+        convergence_label = (
+            "✓ converged" if ci["rhat_max"] <= 1.01
+            else f"⚠ Rhat={ci['rhat_max']:.3f}"
+        )
         ax.set_title(
             f"{event_name} — {series_name}\n"
             f"{lag_s}  |  DT₁={dt1_s}gg → DT₂={dt2_s}gg  |  "
-            f"ν={ci['nu_mean']:.1f}  ρ={ci['rho_mean']:.2f}",
+            f"ν={ci['nu_mean']:.1f}  {convergence_label}",
             fontsize=12, fontweight="bold",
             color="#c0392b" if abs(lag_days) < H0_THRESHOLD else "black",
         )
@@ -531,14 +736,14 @@ if futures_ok["gasoil"]:
 
 merged.to_csv("data/dataset_merged_with_futures.csv")
 
-# ─── Baseline thresholds (2σ da 2021) ────────────────────────────────────────
+# ─── Baseline thresholds (2σ da 2019) ────────────────────────────────────────
 baseline = merged.loc[BASELINE_START:BASELINE_END]
 thresholds = {}
 for col in ["margine_benz_crack", "margine_dies_crack"]:
     if col in baseline.columns:
         vals = baseline[col].dropna()
         thresholds[col] = float(2 * vals.std()) if len(vals) >= 4 else 0.03
-        print(f"  Soglia 2σ baseline 2021 | {col}: {thresholds[col]:.5f} EUR/L")
+        print(f"  Soglia 2σ baseline 2019 | {col}: {thresholds[col]:.5f} EUR/L")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Plot: margini nel tempo
@@ -553,12 +758,12 @@ def _margin_plot(col, fuel_name, color, title):
         return
     fig, ax = plt.subplots(figsize=(14, 5))
     ax.plot(series.index, series.values, color=color, lw=2.0, label=fuel_name)
-    # Baseline band (mean ± 2σ dal 2021)
+    # Baseline band (mean ± 2σ dal 2019)
     bl_vals = baseline[col].dropna()
     if len(bl_vals) >= 4:
         ax.axhspan(bl_vals.mean() - 2*bl_vals.std(),
                    bl_vals.mean() + 2*bl_vals.std(),
-                   alpha=0.12, color="#888888", label="Baseline ±2σ (2021)")
+                   alpha=0.12, color="#888888", label="Baseline ±2σ (2019)")
         ax.axhline(bl_vals.mean(), color="#888888", lw=1.0, ls="--")
     for label, (date, c) in WAR_EVENTS_CFG.items():
         ts = pd.Timestamp(date)
@@ -641,7 +846,11 @@ else:
             print(f"\n  MCMC margine → {event_name} | {fuel_name} | {method_name}")
             x_vals = np.arange(len(df_ev), dtype=float)
             y_vals = df_ev[margine_col].values.astype(float)
-            ci_m   = bayesian_changepoint(x_vals, y_vals)
+            _scenario_key_m = f"{event_name}__{fuel_name}__{method_name}"
+            _mcmc_cfg_m     = _get_mcmc_cfg(_scenario_key_m)
+            if _scenario_key_m in MCMC_CONFIG:
+                print(f"  [cfg] override attivo: {MCMC_CONFIG[_scenario_key_m]}")
+            ci_m   = bayesian_changepoint(x_vals, y_vals, mcmc_cfg=_mcmc_cfg_m)
 
             cp_idx     = ci_m["tau_idx"]
             cp_date    = df_ev.index[cp_idx]
@@ -653,16 +862,21 @@ else:
             soglia    = thresholds.get(margine_col, 0.03)
             anomalo   = abs(delta_mean) > soglia
             ci_non0   = (boot_lo > 0) or (boot_hi < 0)
-            # AND: entrambi i test devono rigettare H0 (più conservativo,
-            # evita falsi positivi da OR che raddoppia Type I error)
-            stat_sig  = (t_p < ALPHA and ks_p < ALPHA) and ci_non0
+            # Decisione statistica — test primario UNICO: Welch t-test.
+            # KS e bootstrap CI sono diagnostici ausiliari (riportati ma non
+            # usati nella regola di rigetto), per coerenza con la BH correction
+            # che è applicata solo su t_p.
+            # Usare AND(t, KS) come gate creerebbe un test composito non standard
+            # con alpha nominale non controllato dalla BH sul solo t_p.
+            # Rif: Benjamini & Hochberg (1995); Holm (1979).
+            stat_sig  = (t_p < ALPHA)   # solo Welch t come test primario
 
             if stat_sig and anomalo and delta_mean > 0:
-                clas = "SPECULAZIONE"
+                clas = "MARGINE ANOMALO POSITIVO"
             elif stat_sig and anomalo and delta_mean < 0:
                 clas = "COMPRESSIONE MARGINE"
             elif not anomalo:
-                clas = "ANTICIPAZIONE RAZIONALE / NEUTRO"
+                clas = "NEUTRO / TRASMISSIONE ATTESA"
             elif stat_sig and not anomalo:
                 clas = "VARIAZIONE STATISTICA (non anomala)"
             else:
@@ -689,7 +903,8 @@ else:
                 "lag_tau_vs_shock":    lag_vs_sh,
                 "break_strutturale":   not no_break,
                 "nu_StudentT":         round(ci_m["nu_mean"], 2),
-                "rho_AR1":             round(ci_m["rho_mean"], 3),
+                "rhat_max":            round(ci_m["rhat_max"], 3),
+                "ess_min":             round(ci_m["ess_min"],  0),
                 "classificazione":     clas,
             })
 
@@ -707,7 +922,7 @@ else:
         # Rivaluta classificazione con BH correction
         def _reclassify_bh(row):
             if not row["BH_reject_FDR5%"]:
-                return ("ANTICIPAZIONE RAZIONALE / NEUTRO"
+                return ("NEUTRO / TRASMISSIONE ATTESA"
                         if row["delta_anomalo"] is False
                         else "VARIAZIONE STATISTICA (non anomala)")
             return row["classificazione"]
@@ -719,15 +934,17 @@ else:
         print(f"  BH correction: {bh_reject.sum()} / {len(bh_reject)} test rigettati a FDR 5%")
 
         # ── Sensitivity analysis baseline ─────────────────────────────────
-        # Verifica robustezza soglia 2σ con tre definizioni di baseline:
-        #   A) H1 2021 (default, gen-giu)
-        #   B) Full 2021 (gen-dic) — vecchia versione
-        #   C) 2019 full — pre-COVID, fuori dall'analisi principale
+        # Verifica robustezza soglia 2σ rispetto alla scelta di baseline:
+        #   A) 2019 full  (PRIMARIA — pre-COVID, pre-crisi, mercato maturo)
+        #   B) Full 2021  (sensitivity check — post-COVID recovery, prezzi in rimbalzo)
+        # H1-2021 rimosso: era un fallback temporaneo usato quando il dataset
+        # partiva da 2021; ora che 2019 è disponibile come baseline primaria
+        # non aggiunge informazione rispetto a Full-2021.
+        # Rif: Benjamini & Hochberg (1995); Tukey (1991).
         sens_rows = []
         for bl_label, bl_start, bl_end in [
-            ("H1_2021",   "2021-01-01", "2021-06-30"),
-            ("Full_2021", "2021-01-01", "2021-12-31"),
-            ("2019",      "2019-01-01", "2019-12-31"),
+            ("2019_full",  "2019-01-01", "2019-12-31"),   # PRIMARY baseline
+            ("Full_2021",  "2021-01-01", "2021-12-31"),   # sensitivity check
         ]:
             for col in ["margine_benz_crack", "margine_dies_crack"]:
                 if col not in merged.columns:
@@ -775,7 +992,7 @@ else:
         ax_s.set_yticklabels(labels, fontsize=8.5)
         ax_s.set_xlabel("Δ margine lordo post-shock (EUR/litro)", fontsize=11)
         ax_s.set_title("Variazione margine lordo — Test anomalia margine\n"
-                       "(classificazione con Benjamini-Hochberg FDR 5%)",
+                       "(classificazione con Benjamini-Hochberg FDR 5% — etichette descrittive, non causali)",
                        fontsize=12, fontweight="bold")
         ax_s.legend(handles=[
             mpatches.Patch(color=c, label=k) for k, c in CLAS_COLOR.items()
@@ -791,7 +1008,10 @@ else:
 print("\n\nScript 02 completato.")
 print(f"  Table 1 (changepoints):    data/table1_changepoints.csv")
 print(f"  Table 2 (margini, no Hor): data/table2_margin_anomaly.csv")
-print(f"  BH correction FDR 5%:      su t_p (Welch, test primario)")
+print(f"  BH correction FDR 5%:      su t_p (Welch, test primario unico)")
+print(f"  KS / bootstrap CI:         diagnostici ausiliari (riportati, non nel gate)")
+print(f"  Nomenclatura:              MARGINE ANOMALO POSITIVO (non 'speculazione')")
+print(f"  Baseline 2019:             data/baseline_sensitivity.csv")
 print(f"  Hormuz:                    escluso — dati post-shock insufficienti")
 print(f"  Plot changepoints:         plots/02_*.png")
 print(f"  Plot margini crack:        plots/07_margins_margine_*_crack.png")

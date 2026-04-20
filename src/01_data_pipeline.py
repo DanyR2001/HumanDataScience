@@ -39,7 +39,7 @@ missing_log = {}   # dizionario {fonte: [date mancanti]}
 # ─────────────────────────────────────────
 print("Scarico tasso EUR/USD (yfinance)...")
 try:
-    eurusd_raw = yf.download("EURUSD=X", start="2021-01-01", end=_TODAY_STR, progress=False)
+    eurusd_raw = yf.download("EURUSD=X", start="2019-01-01", end=_TODAY_STR, progress=False)
     if eurusd_raw.empty:
         raise ValueError("Download vuoto")
     eurusd = eurusd_raw[["Close"]].copy()
@@ -67,7 +67,7 @@ except Exception as e:
 # ─────────────────────────────────────────
 print("\nScarico Brent crude (yfinance)...")
 try:
-    brent_raw = yf.download("BZ=F", start="2021-01-01", end=_TODAY_STR, progress=False)
+    brent_raw = yf.download("BZ=F", start="2019-01-01", end=_TODAY_STR, progress=False)
     if brent_raw.empty:
         raise ValueError("Download vuoto")
     brent = brent_raw[["Close"]].copy()
@@ -267,7 +267,7 @@ for url_idx, (eu_url, (label, fname, is_pretax)) in enumerate(zip(EU_URLS, EU_UR
             benzina_it.rename("benzina_eur_l"),
             diesel_it.rename("diesel_eur_l"),
         ], axis=1)
-        pompa = pompa[pompa.index >= "2021-01-01"]
+        pompa = pompa[pompa.index >= "2019-01-01"]
         pompa.dropna(how="all", inplace=True)
         pompa.sort_index(inplace=True)
         pompa.index = pd.to_datetime(pompa.index)
@@ -428,7 +428,7 @@ ax.plot(merged.index, merged[brent_col],    color="#aec6e8", lw=1.0, alpha=0.7)
 ax.plot(merged.index, merged[brent_ma_col], color="#2166ac", lw=2.2)
 add_war_lines(ax, merged[brent_col].max())
 ax.set_ylabel(brent_label, fontsize=FONT_AXIS)
-ax.set_title("Prezzo Brent Crude Oil — 2021–2026 (EUR/barile)", fontsize=14, fontweight="bold")
+ax.set_title("Prezzo Brent Crude Oil — 2019–2026 (EUR/barile)", fontsize=14, fontweight="bold")
 patches_war = [mpatches.Patch(color=c, label=l) for l, (_, c) in WAR_EVENTS.items()]
 ax.legend(handles=[
     plt.Line2D([0],[0], color="#aec6e8", lw=1.5, label="Brent settimanale"),
@@ -448,7 +448,7 @@ fig, ax = plt.subplots(figsize=FIGSIZE)
 ax.plot(merged.index, merged["benzina_eur_l"], color="#d6604d", lw=2.0)
 add_war_lines(ax, merged["benzina_eur_l"].max())
 ax.set_ylabel("EUR / litro", fontsize=FONT_AXIS)
-ax.set_title(f"Prezzo Benzina Italia — senza tasse{tax_note}\n2021–2026",
+ax.set_title(f"Prezzo Benzina Italia — senza tasse{tax_note}\n2019–2026",
              fontsize=13, fontweight="bold")
 ax.legend(handles=[
     plt.Line2D([0],[0], color="#d6604d", lw=2.0, label="Benzina settimanale (EUR/litro)"),
@@ -467,7 +467,7 @@ fig, ax = plt.subplots(figsize=FIGSIZE)
 ax.plot(merged.index, merged["diesel_eur_l"], color="#31a354", lw=2.0)
 add_war_lines(ax, merged["diesel_eur_l"].max())
 ax.set_ylabel("EUR / litro", fontsize=FONT_AXIS)
-ax.set_title(f"Prezzo Diesel Italia — senza tasse{tax_note}\n2021–2026",
+ax.set_title(f"Prezzo Diesel Italia — senza tasse{tax_note}\n2019–2026",
              fontsize=13, fontweight="bold")
 ax.legend(handles=[
     plt.Line2D([0],[0], color="#31a354", lw=2.0, label="Diesel settimanale (EUR/litro)"),
