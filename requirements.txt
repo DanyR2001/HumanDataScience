@@ -1,11 +1,10 @@
 yfinance
-ruptures
+pymc
+pytensor
 statsmodels
 pandas
 numpy
 matplotlib
-seaborn
 scipy
 requests
 openpyxl
-pymc
