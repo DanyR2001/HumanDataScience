@@ -131,8 +131,11 @@ MCMC_CONFIG: dict[str, dict] = {
 
     # Ucraina / Brent → Rhat 1.030 nel run di riferimento
     "Ucraina (Feb 2022)__Brent": {
-        "tune":          4000,       # più adattamento per geometria complessa
-        "target_accept": 0.97,
+        "draws":         3000,        # più campioni → ESS più alto
+        "tune":          6000,        # warm‑up più lungo → migliore adattamento della metrica
+        "target_accept": 0.99,        # passo più piccolo → meno divergenze e mixing più stabile
+        "init":          "adapt_full", # matrice di massa densa (covarianza completa) anziché diagonale
+        "max_treedepth": 20,          # profondità albero aumentata per geometrie strette
     },
 
     # ── Table 2: Changepoint sui margini lordi ────────────────────────────────
@@ -244,7 +247,7 @@ CLAS_COLOR = {
     "MARGINE ANOMALO POSITIVO":                 "#c0392b",   # ex SPECULAZIONE
     "COMPRESSIONE MARGINE":                     "#2980b9",
     "NEUTRO / TRASMISSIONE ATTESA":             "#27ae60",   # ex ANTICIPAZIONE RAZIONALE / NEUTRO
-    "VARIAZIONE STATISTICA (non anomala)":      "#e67e22",
+    "VARIAZIONE STATISTICA":      "#e67e22",
     "INCONCLUSIVO":                             "#95a5a6",
 }
 
@@ -878,7 +881,7 @@ else:
             elif not anomalo:
                 clas = "NEUTRO / TRASMISSIONE ATTESA"
             elif stat_sig and not anomalo:
-                clas = "VARIAZIONE STATISTICA (non anomala)"
+                clas = "VARIAZIONE STATISTICA"
             else:
                 clas = "INCONCLUSIVO"
 
@@ -924,7 +927,7 @@ else:
             if not row["BH_reject_FDR5%"]:
                 return ("NEUTRO / TRASMISSIONE ATTESA"
                         if row["delta_anomalo"] is False
-                        else "VARIAZIONE STATISTICA (non anomala)")
+                        else "VARIAZIONE STATISTICA")
             return row["classificazione"]
 
         df_res["classificazione_BH"] = df_res.apply(_reclassify_bh, axis=1)

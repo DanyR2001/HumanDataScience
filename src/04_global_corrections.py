@@ -84,10 +84,11 @@ did_path = "data/did_results.csv"
 if os.path.exists(did_path):
     df_did = pd.read_csv(did_path)
     for _, row in df_did.iterrows():
+        paese = row.get("Paese_controllo", row.get("Carburante", "?"))
         all_rows.append({
             "fonte":       "DiD",
             "tipo":        "confirmatory",
-            "descrizione": f"DiD {row.get('Evento','?')} | {row.get('Carburante','?')}",
+            "descrizione": f"DiD {row.get('Evento','?')} | IT vs {paese} | {row.get('Carburante','?')}",
             "p_value":     float(row["p_value"]),
         })
     print(f"  DiD → {len(df_did)} test caricati")

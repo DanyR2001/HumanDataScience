@@ -739,11 +739,9 @@ DID_CONTROLS = {
         "prefissi_col": ["DE", "GERMANY", "DEUTSCH"],
         "nota": None,
     },
-    "Francia": {
-        "prefissi_col": ["FR", "FRANCE", "FRENCH"],
-        "nota": ("⚠ Francia 2022: ristourne carburant gov. ~0.15–0.18 €/l "
-                 "(set–dic 2022) → margine FR compresso; DiD IT vs FR "
-                 "per Ucraina 2022 da interpretare con cautela"),
+    "Svezia": {
+        "prefissi_col": ["SE", "SWEDEN", "SVERIGE"],
+        "nota": None,
     },
 }
 
@@ -777,65 +775,67 @@ def _safe_read_sheet_did(path, sheet_name):
     df = df.set_index(idx_col)
     return df[df.index.notna()].sort_index()
 
+def _find_notax(names):
+    for s in names:
+        su = s.upper()
+        if any(k in su for k in ["WO TAX", "WITHOUT", "NO TAX", "NOTAX", "WO TAXES"]):
+            return s
+    return names[1] if len(names) > 1 else names[0]
+
 EU_HIST_FILE = "data/eu_oil_bulletin_history.xlsx"
-de_pump_loaded = False
 
 try:
     sheet_names_eu = _safe_sheet_names_did(EU_HIST_FILE)
+    notax_sheet    = _find_notax(sheet_names_eu)
+    df_eu          = _safe_read_sheet_did(EU_HIST_FILE, notax_sheet)
+    df_eu          = df_eu.apply(pd.to_numeric, errors="coerce")
 
-    # Cerca il foglio senza tasse (stessa logica di 01_data_pipeline.py)
-    def _find_notax(names):
-        for s in names:
-            su = s.upper()
-            if any(k in su for k in ["WO TAX", "WITHOUT", "NO TAX", "NOTAX", "WO TAXES"]):
-                return s
-        return names[1] if len(names) > 1 else names[0]
+    for paese, cfg_paese in DID_CONTROLS.items():
+        prefissi = cfg_paese["prefissi_col"]
+        # Trova colonne che matchano uno qualsiasi dei prefissi del paese
+        all_cols = [c for c in df_eu.columns if any(
+            str(c).upper().startswith(p) or p in str(c).upper()
+            for p in prefissi
+        )]
+        b_cols = [c for c in all_cols if any(k in str(c).lower()
+                  for k in ["95", "benz", "petrol", "gasol", "euro", "unleaded", "super"])]
+        d_cols = [c for c in all_cols if any(k in str(c).lower()
+                  for k in ["diesel", "gas_oil", "gasoil"])]
+        # Fallback: prendi le prime due colonne disponibili
+        if not b_cols and len(all_cols) >= 1:
+            b_cols = [all_cols[0]]
+        if not d_cols and len(all_cols) >= 2:
+            d_cols = [all_cols[1]]
 
-    notax_sheet = _find_notax(sheet_names_eu)
-    df_eu = _safe_read_sheet_did(EU_HIST_FILE, notax_sheet)
-    df_eu = df_eu.apply(pd.to_numeric, errors="coerce")
+        if b_cols and d_cols:
+            pump = pd.concat([
+                df_eu[b_cols[0]].rename("benzina_eur_l"),
+                df_eu[d_cols[0]].rename("diesel_eur_l"),
+            ], axis=1)
+            pump = pump[pump.index >= "2019-01-01"].dropna(how="all")
+            pump = pump.resample("W-MON").mean()
+            for _col in ["benzina_eur_l", "diesel_eur_l"]:
+                if _col in pump.columns:
+                    _med = pump[_col].dropna().median()
+                    pump[_col] = pump[_col] / (1000.0 if _med > 10 else 1.0)
+            brent_aligned = merged["brent_eur"].reindex(pump.index).ffill(limit=4)
+            pump["margine_benzina"] = pump["benzina_eur_l"] - brent_aligned / BRENT_L_FACTOR
+            pump["margine_diesel"]  = pump["diesel_eur_l"]  - brent_aligned / BRENT_L_FACTOR
+            CONTROL_PUMPS[paese] = pump
+            print(f"  {paese}: {len(pump.dropna())} settimane caricate "
+                  f"({b_cols[0]}, {d_cols[0]})")
+        else:
+            print(f"  {paese}: colonne non trovate nel foglio '{notax_sheet}' — skip")
 
-    # Colonne DE (Germania)
-    de_all = [c for c in df_eu.columns if str(c).upper().startswith("DE")
-              or "GERMANY" in str(c).upper() or "DEUTSCH" in str(c).upper()]
-    de_b = [c for c in de_all if any(k in str(c).lower()
-            for k in ["95", "benz", "petrol", "gasol", "euro"])]
-    de_d = [c for c in de_all if any(k in str(c).lower()
-            for k in ["diesel", "gas_oil", "gasoil"])]
-    if not de_b and len(de_all) >= 1:
-        de_b = [de_all[0]]
-    if not de_d and len(de_all) >= 2:
-        de_d = [de_all[1]]
-
-    if de_b and de_d:
-        de_pump = pd.concat([
-            df_eu[de_b[0]].rename("benzina_eur_l"),
-            df_eu[de_d[0]].rename("diesel_eur_l"),
-        ], axis=1)
-        de_pump = de_pump[de_pump.index >= "2019-01-01"].dropna(how="all")
-        de_pump = de_pump.resample("W-MON").mean()
-        # Normalizza unità DE
-        for _col in ["benzina_eur_l", "diesel_eur_l"]:
-            if _col in de_pump.columns:
-                _med = de_pump[_col].dropna().median()
-                de_pump[_col] = de_pump[_col] / (1000.0 if _med > 10 else 1.0)
-        # Calcola margini DE (stesso brent condiviso)
-        brent_aligned = merged["brent_eur"].reindex(de_pump.index).ffill(limit=4)
-        de_pump["margine_benzina"] = de_pump["benzina_eur_l"] - brent_aligned / BRENT_L_FACTOR
-        de_pump["margine_diesel"]  = de_pump["diesel_eur_l"]  - brent_aligned / BRENT_L_FACTOR
-        DE_PUMP = de_pump
-        de_pump_loaded = True
-        print(f"  Germania: {len(de_pump.dropna())} settimane caricate "
-              f"({de_b[0]}, {de_d[0]})")
-    else:
-        print(f"  Colonne DE non trovate nel foglio '{notax_sheet}' — DiD skip")
+    if not CONTROL_PUMPS:
+        print(f"  Nessun paese di controllo caricato — DiD skip")
 
 except FileNotFoundError:
     print(f"  {EU_HIST_FILE} non trovato — eseguire prima 01_data_pipeline.py")
 except Exception as e:
-    print(f"  Errore caricamento dati DE: {e} — DiD skip")
+    print(f"  Errore caricamento dati controllo: {e} — DiD skip")
 
-if de_pump_loaded and isinstance(DE_PUMP, pd.DataFrame) and len(DE_PUMP) > 0:
+if CONTROL_PUMPS:
     import statsmodels.api as sm
 
     FUELS_DID = {
@@ -843,104 +843,99 @@ if de_pump_loaded and isinstance(DE_PUMP, pd.DataFrame) and len(DE_PUMP) > 0:
         "Diesel":  ("margine_diesel",  "#31a354"),
     }
 
-    for event_name, cfg in EVENTS.items():
-        shock      = cfg["shock"]
-        pre_start  = cfg["pre_start"]
-        post_end   = cfg["post_end"]
+    for paese, ctrl_pump in CONTROL_PUMPS.items():
+        nota_paese = DID_CONTROLS[paese]["nota"]
+        if nota_paese:
+            print(f"\n  {nota_paese}")
 
-        for fuel_name, (margin_col, fc) in FUELS_DID.items():
-            if margin_col not in merged.columns or margin_col not in DE_PUMP.columns:
-                continue
+        for event_name, cfg in EVENTS.items():
+            shock      = cfg["shock"]
+            pre_start  = cfg["pre_start"]
+            post_end   = cfg["post_end"]
 
-            # Costruisci panel IT + DE nella finestra evento
-            it_pre  = merged.loc[pre_start:shock,    margin_col].dropna()
-            it_post = merged.loc[shock:post_end,      margin_col].dropna()
-            de_pre  = DE_PUMP.loc[pre_start:shock,    margin_col].dropna()
-            de_post = DE_PUMP.loc[shock:post_end,     margin_col].dropna()
+            for fuel_name, (margin_col, fc) in FUELS_DID.items():
+                if margin_col not in merged.columns or margin_col not in ctrl_pump.columns:
+                    continue
 
-            if any(len(s) < 3 for s in [it_pre, it_post, de_pre, de_post]):
-                continue
+                # Costruisci panel IT + paese_controllo nella finestra evento
+                it_pre  = merged.loc[pre_start:shock,     margin_col].dropna()
+                it_post = merged.loc[shock:post_end,       margin_col].dropna()
+                ct_pre  = ctrl_pump.loc[pre_start:shock,  margin_col].dropna()
+                ct_post = ctrl_pump.loc[shock:post_end,   margin_col].dropna()
 
-            # ── Parallel trends test (pre-shock only) ────────────────────────
-            # H0: IT e DE hanno lo stesso trend lineare nel periodo pre-shock.
-            # Modello: M = α + β1·Italy + β2·t + β3·(Italy×t) + ε
-            # Test su β3: se significativo → trend divergenti → PTA violata.
-            # Rif: Callaway & Sant'Anna (2021); Roth (2022).
-            pt_pass = None
-            pt_pvalue = np.nan
-            try:
-                # Costruisci panel solo pre-shock con indice temporale centrato
-                all_pre_dates = it_pre.index.union(de_pre.index).sort_values()
-                t_vals_it = np.array([(d - all_pre_dates[0]).days for d in it_pre.index], dtype=float)
-                t_vals_de = np.array([(d - all_pre_dates[0]).days for d in de_pre.index], dtype=float)
-                rows_pt = (
-                    [(1, t, v) for t, v in zip(t_vals_it, it_pre.values)] +
-                    [(0, t, v) for t, v in zip(t_vals_de, de_pre.values)]
+                if any(len(s) < 3 for s in [it_pre, it_post, ct_pre, ct_post]):
+                    continue
+
+                # ── Parallel trends test (pre-shock only) ────────────────────
+                pt_pass   = None
+                pt_pvalue = np.nan
+                try:
+                    all_pre_dates = it_pre.index.union(ct_pre.index).sort_values()
+                    t_vals_it = np.array([(d - all_pre_dates[0]).days for d in it_pre.index], dtype=float)
+                    t_vals_ct = np.array([(d - all_pre_dates[0]).days for d in ct_pre.index], dtype=float)
+                    rows_pt = (
+                        [(1, t, v) for t, v in zip(t_vals_it, it_pre.values)] +
+                        [(0, t, v) for t, v in zip(t_vals_ct, ct_pre.values)]
+                    )
+                    df_pt = pd.DataFrame(rows_pt, columns=["Italy", "t", "Margin"])
+                    df_pt["Italy_x_t"] = df_pt["Italy"] * df_pt["t"]
+                    X_pt    = sm.add_constant(df_pt[["Italy", "t", "Italy_x_t"]].values)
+                    ols_pt  = sm.OLS(df_pt["Margin"].values, X_pt).fit(cov_type="HC3")
+                    pt_pvalue = float(ols_pt.pvalues[3])
+                    pt_pass   = pt_pvalue >= ALPHA
+                    pt_label  = f"PTA p={pt_pvalue:.3f} {'✓ non rigettata' if pt_pass else '✗ VIOLATA'}"
+                    print(f"    [{paese}] Parallel Trends: {pt_label}")
+                except Exception as e:
+                    print(f"    [{paese}] Parallel Trends: errore ({e})")
+
+                rows_panel = (
+                    [(1, 0, v) for v in it_pre]  +   # IT pre
+                    [(1, 1, v) for v in it_post] +    # IT post
+                    [(0, 0, v) for v in ct_pre]  +    # paese_ctrl pre
+                    [(0, 1, v) for v in ct_post]       # paese_ctrl post
                 )
-                df_pt = pd.DataFrame(rows_pt, columns=["Italy", "t", "Margin"])
-                df_pt["Italy_x_t"] = df_pt["Italy"] * df_pt["t"]
-                import statsmodels.api as sm
-                X_pt = sm.add_constant(df_pt[["Italy", "t", "Italy_x_t"]].values)
-                ols_pt = sm.OLS(df_pt["Margin"].values, X_pt).fit(cov_type="HC3")
-                pt_pvalue = float(ols_pt.pvalues[3])   # coeff β3 = Italy×t
-                pt_pass   = pt_pvalue >= ALPHA          # True = PTA non rigettata
-                pt_label  = (f"PTA p={pt_pvalue:.3f} {'✓ non rigettata' if pt_pass else '✗ VIOLATA'}")
-                print(f"    Parallel Trends: {pt_label}")
-            except Exception as e:
-                print(f"    Parallel Trends: errore ({e})")
+                df_panel = pd.DataFrame(rows_panel, columns=["Italy", "Post", "Margin"])
+                df_panel["Italy_x_Post"] = df_panel["Italy"] * df_panel["Post"]
 
-            rows_panel = (
-                [(1, 0, v) for v in it_pre]  +   # IT pre
-                [(1, 1, v) for v in it_post] +    # IT post
-                [(0, 0, v) for v in de_pre]  +    # DE pre
-                [(0, 1, v) for v in de_post]       # DE post
-            )
-            df_panel = pd.DataFrame(rows_panel, columns=["Italy", "Post", "Margin"])
-            df_panel["Italy_x_Post"] = df_panel["Italy"] * df_panel["Post"]
+                X_did   = sm.add_constant(df_panel[["Italy", "Post", "Italy_x_Post"]].values)
+                ols_did = sm.OLS(df_panel["Margin"].values, X_did).fit(cov_type="HC3")
+                delta     = ols_did.params[3]
+                se_delta  = ols_did.bse[3]
+                t_did     = ols_did.tvalues[3]
+                p_did     = ols_did.pvalues[3]
+                ci_lo_did = delta - 1.96 * se_delta
+                ci_hi_did = delta + 1.96 * se_delta
 
-            X_did = sm.add_constant(
-                df_panel[["Italy", "Post", "Italy_x_Post"]].values
-            )
-            ols_did = sm.OLS(df_panel["Margin"].values, X_did).fit(
-                cov_type="HC3"  # errori robusti all'eteroschedasticità
-            )
-            # δ è il coefficiente di Italy_x_Post (indice 3)
-            delta      = ols_did.params[3]
-            se_delta   = ols_did.bse[3]
-            t_did      = ols_did.tvalues[3]
-            p_did      = ols_did.pvalues[3]
-            ci_lo_did  = delta - 1.96 * se_delta
-            ci_hi_did  = delta + 1.96 * se_delta
-
-            row_did = {
-                "Evento":             event_name,
-                "Carburante":         fuel_name,
-                "n_IT_pre":           len(it_pre),
-                "n_IT_post":          len(it_post),
-                "n_DE_pre":           len(de_pre),
-                "n_DE_post":          len(de_post),
-                "PTA_pvalue":         round(pt_pvalue, 4) if not np.isnan(pt_pvalue) else "N/A",
-                "PTA_non_rigettata":  pt_pass,
-                "delta_DiD":          round(delta,    4),
-                "SE_HC3":             round(se_delta, 4),
-                "CI_95_low":          round(ci_lo_did, 4),
-                "CI_95_high":         round(ci_hi_did, 4),
-                "t_stat":             round(t_did,  3),
-                "p_value":            round(p_did,  6),
-                "R2":                 round(ols_did.rsquared, 3),
-                "H0":                 "RIFIUTATA" if p_did < ALPHA else "non rifiutata",
-            }
-            did_rows.append(row_did)
-            pta_warn = " ⚠ PTA violata" if pt_pass is False else ""
-            print(f"  {event_name.split('(')[0].strip():<25} | {fuel_name:<8}: "
-                  f"δ={delta:+.4f} EUR/l  SE={se_delta:.4f}  "
-                  f"p={p_did:.4f} {_stars(p_did)}  → H0 {row_did['H0']}{pta_warn}")
+                row_did = {
+                    "Evento":             event_name,
+                    "Paese_controllo":    paese,
+                    "Carburante":         fuel_name,
+                    "n_IT_pre":           len(it_pre),
+                    "n_IT_post":          len(it_post),
+                    "n_CT_pre":           len(ct_pre),
+                    "n_CT_post":          len(ct_post),
+                    "PTA_pvalue":         round(pt_pvalue, 4) if not np.isnan(pt_pvalue) else "N/A",
+                    "PTA_non_rigettata":  pt_pass,
+                    "delta_DiD":          round(delta,    4),
+                    "SE_HC3":             round(se_delta, 4),
+                    "CI_95_low":          round(ci_lo_did, 4),
+                    "CI_95_high":         round(ci_hi_did, 4),
+                    "t_stat":             round(t_did,  3),
+                    "p_value":            round(p_did,  6),
+                    "R2":                 round(ols_did.rsquared, 3),
+                    "H0":                 "RIFIUTATA" if p_did < ALPHA else "non rifiutata",
+                }
+                did_rows.append(row_did)
+                pta_warn = " ⚠ PTA violata" if pt_pass is False else ""
+                print(f"  [{paese}] {event_name.split('(')[0].strip():<22} | {fuel_name:<8}: "
+                      f"δ={delta:+.4f} EUR/l  SE={se_delta:.4f}  "
+                      f"p={p_did:.4f} {_stars(p_did)}  → H0 {row_did['H0']}{pta_warn}")
 
     if did_rows:
         pd.DataFrame(did_rows).to_csv("data/did_results.csv", index=False)
         print(f"\n  Salvato: data/did_results.csv ({len(did_rows)} stime DiD)")
 else:
-    print("  DiD non eseguito (dati DE non disponibili).")
+    print("  DiD non eseguito (nessun dato paese di controllo disponibile).")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1005,7 +1000,8 @@ if ttest_rows:
 # Pannello C–D: DiD δ con IC 95% (se disponibile)
 if did_rows:
     df_did = pd.DataFrame(did_rows)
-    labels_did  = [f"{r['Evento'].split('(')[0].strip()}\n{r['Carburante']}"
+    # Label: "Evento\nPaese_ctrl\nCarburante"
+    labels_did  = [f"{r['Evento'].split('(')[0].strip()}\nvs {r['Paese_controllo']}\n{r['Carburante']}"
                    for _, r in df_did.iterrows()]
     deltas_did  = df_did["delta_DiD"].values
     ci_lo_did_a = df_did["delta_DiD"].values - df_did["CI_95_low"].values
@@ -1022,32 +1018,40 @@ if did_rows:
                          fmt="none", color="black", capsize=5, lw=1.5)
     ax_did1.axvline(0, color="black", lw=1.0, ls="--")
     ax_did1.set_yticks(range(len(labels_did)))
-    ax_did1.set_yticklabels(labels_did, fontsize=8)
+    ax_did1.set_yticklabels(labels_did, fontsize=7)
     ax_did1.set_xlabel("δ DiD (EUR/litro, IC 95% HC3)", fontsize=10)
-    ax_did1.set_title("DiD δ: variazione margine IT vs DE\n(Rosso = p<0.05  |  SE robusti HC3)",
-                      fontsize=11, fontweight="bold")
+    ax_did1.set_title(
+        "DiD δ: variazione margine IT vs paesi controllo\n(Rosso = p<0.05  |  SE robusti HC3)",
+        fontsize=11, fontweight="bold")
 
     ax_did2 = axes9[1, 1]
-    # Mostra differenze medie IT vs DE pre/post per Ucraina 2022 (primo evento)
-    ev0 = list(EVENTS.keys())[0]
-    for fuel_name, (margin_col, fc) in FUELS_DID.items() if de_pump_loaded else []:
-        if margin_col not in merged.columns or margin_col not in DE_PUMP.columns:
-            continue
-        cfg0 = EVENTS[ev0]
-        it_s = merged.loc[cfg0["pre_start"]:cfg0["post_end"], margin_col].dropna()
-        de_s = DE_PUMP.loc[cfg0["pre_start"]:cfg0["post_end"], margin_col].dropna()
-        ax_did2.plot(it_s.index, it_s.values, color=fc,    lw=2.0, label=f"IT {fuel_name}")
-        ax_did2.plot(de_s.index, de_s.values, color=fc, lw=1.5,
-                     ls="--", alpha=0.6, label=f"DE {fuel_name}")
-    ax_did2.axvline(EVENTS[ev0]["shock"], color="black", lw=1.5, ls="--")
-    ax_did2.text(EVENTS[ev0]["shock"] + pd.Timedelta(days=5),
-                 ax_did2.get_ylim()[1] if ax_did2.get_ylim()[1] != 0 else 0.05,
-                 ev0.split("(")[0].strip(), rotation=90, fontsize=8, color="black",
-                 va="top")
+    # Time-series: margine IT vs tutti i paesi controllo — primo evento, Benzina
+    ev0       = list(EVENTS.keys())[0]
+    cfg0      = EVENTS[ev0]
+    margin_col_plot = "margine_benzina"
+
+    # Palette colori per i paesi di controllo
+    ctrl_colors = ["#2980b9", "#27ae60", "#8e44ad", "#e67e22"]
+    if margin_col_plot in merged.columns:
+        it_s = merged.loc[cfg0["pre_start"]:cfg0["post_end"], margin_col_plot].dropna()
+        ax_did2.plot(it_s.index, it_s.values, color="#d6604d", lw=2.0, label="IT Benzina")
+
+    for (paese, ctrl_pump), col in zip(CONTROL_PUMPS.items(), ctrl_colors):
+        if margin_col_plot in ctrl_pump.columns:
+            ct_s = ctrl_pump.loc[cfg0["pre_start"]:cfg0["post_end"], margin_col_plot].dropna()
+            ax_did2.plot(ct_s.index, ct_s.values, color=col, lw=1.5,
+                         ls="--", alpha=0.8, label=f"{paese[:3]} Benzina")
+
+    ax_did2.axvline(cfg0["shock"], color="black", lw=1.5, ls="--")
+    ylim_top = ax_did2.get_ylim()[1]
+    ax_did2.text(cfg0["shock"] + pd.Timedelta(days=5),
+                 ylim_top if ylim_top != 0 else 0.05,
+                 ev0.split("(")[0].strip(), rotation=90, fontsize=8, color="black", va="top")
     ax_did2.set_ylabel("Margine lordo (EUR/litro)", fontsize=10)
-    ax_did2.set_title(f"Margine IT vs DE — {ev0}\n(linea continua = IT, tratteggio = DE)",
-                      fontsize=11, fontweight="bold")
-    ax_did2.legend(fontsize=9)
+    ax_did2.set_title(
+        f"Margine IT vs paesi controllo — {ev0}\n(continuo = IT  |  tratteggio = controllo)",
+        fontsize=11, fontweight="bold")
+    ax_did2.legend(fontsize=8, loc="upper left")
     ax_did2.xaxis.set_major_formatter(mdates.DateFormatter("%b %y"))
     ax_did2.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
     plt.setp(ax_did2.xaxis.get_majorticklabels(), rotation=45)
