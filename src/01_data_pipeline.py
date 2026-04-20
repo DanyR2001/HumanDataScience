@@ -11,6 +11,8 @@ Scarica e prepara i dati per l'analisi.
 
 import os
 import requests
+from datetime import date, timedelta
+_TODAY_STR = (date.today() + timedelta(days=7)).strftime('%Y-%m-%d')  # end dinamico: sempre aggiornato
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -37,7 +39,7 @@ missing_log = {}   # dizionario {fonte: [date mancanti]}
 # ─────────────────────────────────────────
 print("Scarico tasso EUR/USD (yfinance)...")
 try:
-    eurusd_raw = yf.download("EURUSD=X", start="2021-01-01", end="2026-03-20", progress=False)
+    eurusd_raw = yf.download("EURUSD=X", start="2021-01-01", end=_TODAY_STR, progress=False)
     if eurusd_raw.empty:
         raise ValueError("Download vuoto")
     eurusd = eurusd_raw[["Close"]].copy()
@@ -65,7 +67,7 @@ except Exception as e:
 # ─────────────────────────────────────────
 print("\nScarico Brent crude (yfinance)...")
 try:
-    brent_raw = yf.download("BZ=F", start="2021-01-01", end="2026-03-20", progress=False)
+    brent_raw = yf.download("BZ=F", start="2021-01-01", end=_TODAY_STR, progress=False)
     if brent_raw.empty:
         raise ValueError("Download vuoto")
     brent = brent_raw[["Close"]].copy()
@@ -153,45 +155,76 @@ EU_URL_META = [
     ("settimanale con tasse (fallback)",     "data/eu_oil_bulletin_tax.xlsx",      False),
 ]
 
+import openpyxl as _opxl
+
+def _safe_sheet_names(path):
+    """Legge nomi fogli con openpyxl read_only=True.
+    Evita il bug 'argument of type float is not iterable' causato da
+    data-validation con formula1 numerica nei file EU Bulletin."""
+    wb = _opxl.load_workbook(path, read_only=True, data_only=True)
+    names = wb.sheetnames
+    wb.close()
+    return names
+
+def _safe_read_sheet(path, sheet_name):
+    """Legge un foglio xlsx via openpyxl read_only=True → DataFrame.
+    Prima riga non-vuota = header, prima colonna = indice datetime."""
+    wb = _opxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb[sheet_name]
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+    wb.close()
+    if not rows:
+        return pd.DataFrame()
+    header_idx = next((i for i, r in enumerate(rows) if any(v is not None for v in r)), 0)
+    headers = [str(h).strip() if h is not None else f"_col{i}"
+               for i, h in enumerate(rows[header_idx])]
+    df = pd.DataFrame(rows[header_idx + 1:], columns=headers)
+    idx_col = headers[0]
+    df[idx_col] = pd.to_datetime(df[idx_col], errors="coerce")
+    df = df.set_index(idx_col)
+    df = df[df.index.notna()].sort_index()
+    return df
+
+def _find_notax_sheet(sheet_names):
+    for s in sheet_names:
+        su = s.upper()
+        if any(k in su for k in ["WO TAX", "WITHOUT", "NO TAX", "NOTAX", "WO TAXES"]):
+            return s
+    return sheet_names[1] if len(sheet_names) > 1 else sheet_names[0]
+
 for url_idx, (eu_url, (label, fname, is_pretax)) in enumerate(zip(EU_URLS, EU_URL_META)):
     try:
         print(f"  Tentativo: {label}...")
-        resp = requests.get(eu_url, timeout=60)
+        resp = requests.get(
+            eu_url, timeout=60,
+            headers={"User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            )},
+        )
         resp.raise_for_status()
-        with open(fname, "wb") as f:
-            f.write(resp.content)
 
-        # Ispezione fogli: il file storico usa nomi diversi dal settimanale
-        xl = pd.ExcelFile(fname)
-        sheet_names = xl.sheet_names
+        # Valida che sia un vero file Excel (non HTML di errore con status 200)
+        content = resp.content
+        if not (content[:2] == b'PK' or content[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'):
+            raise ValueError(
+                f"Risposta non-Excel (possibile pagina HTML di errore). "
+                f"Scarica manualmente: {eu_url}"
+            )
+        with open(fname, "wb") as fh:
+            fh.write(content)
 
-        # Regola: il foglio SENZA tasse e quello che vogliamo per entrambe le serie.
-        # Nel file storico i fogli si chiamano "Prices with taxes" e "Prices wo taxes".
-        # Nelle colonne, "wo tax" = senza tasse.  Cerchiamo il foglio che contiene
-        # colonne con "wo_tax" o "without" nel nome; se non trovato, usiamo "wo taxes"/
-        # "without taxes" nel nome del foglio; come ultima risorsa, foglio 1 (indice 1).
-        def find_notax_sheet(xl, sheet_names):
-            # Primo tentativo: cerca per nome foglio
-            for s in sheet_names:
-                su = s.upper()
-                if "WO TAX" in su or "WITHOUT" in su or "NO TAX" in su or "NOTAX" in su:
-                    return s
-            # Secondo tentativo: leggi ogni foglio e cerca colonne senza tasse per IT
-            for s in sheet_names:
-                df_tmp = pd.read_excel(xl, sheet_name=s, header=0, index_col=0, nrows=2)
-                cols_lower = [str(c).lower() for c in df_tmp.columns]
-                if any(("wo_tax" in c or "without" in c or "no_tax" in c) and
-                       ("it" in c or "ital" in c) for c in cols_lower):
-                    return s
-            # Fallback: secondo foglio
-            return sheet_names[1] if len(sheet_names) > 1 else sheet_names[0]
+        # ── Usa openpyxl read_only=True (salta data-validation) ───────────────
+        # pd.ExcelFile/pd.read_excel carica ANCHE le data-validation del file.
+        # Il file EU Bulletin contiene validation con formula1 float nel XML,
+        # che causa TypeError "argument of type float is not iterable".
+        # Con read_only=True openpyxl salta completamente data-validation.
+        sheet_names = _safe_sheet_names(fname)
+        sheet_notax = _find_notax_sheet(sheet_names)
+        print(f"  Foglio senza tasse: '{sheet_notax}'")
 
-        sheet_notax = find_notax_sheet(xl, sheet_names)
-        # Leggiamo lo stesso foglio (senza tasse) per entrambe benzina e diesel:
-        # la distinzione benzina/diesel e data dalle colonne, non dai fogli.
-        df_notax = pd.read_excel(fname, sheet_name=sheet_notax, header=0, index_col=0)
-
-        # Forza dtype numerico (il file storico puo avere header multi-riga o stringhe)
+        df_notax = _safe_read_sheet(fname, sheet_notax)
         df_notax = df_notax.apply(pd.to_numeric, errors="coerce")
 
         # Trova colonne IT senza tasse: benzina (euro95/gasoline) e diesel
@@ -219,9 +252,9 @@ for url_idx, (eu_url, (label, fname, is_pretax)) in enumerate(zip(EU_URLS, EU_UR
         benzina_it = df_notax[it_b[0]].copy()
         diesel_it  = df_notax[it_d[0]].copy()
 
-        # Indice temporale: dropna su indice non-data, converti in datetime
-        for ser in [benzina_it, diesel_it]:
-            ser.index = pd.to_datetime(ser.index, errors="coerce")
+        # Indice temporale: gia DatetimeIndex da _safe_read_sheet, ma rinforzato
+        benzina_it.index = pd.to_datetime(benzina_it.index, errors="coerce")
+        diesel_it.index  = pd.to_datetime(diesel_it.index,  errors="coerce")
 
         benzina_it = benzina_it[benzina_it.index.notna()]
         diesel_it  = diesel_it[diesel_it.index.notna()]
@@ -321,7 +354,15 @@ if brent_weekly is None:
         "Controlla data/missing_weeks.csv per il dettaglio."
     )
 
-merged = pd.concat([brent_weekly, pompa], axis=1, join="inner").dropna()
+# Left join su pompa (EU Oil Bulletin, più recente): mantiene tutte le settimane
+# del Bulletin. Le ultime 2-3 settimane di Brent mancanti vengono portate avanti
+# con ffill (il prezzo futures cambia poco in pochi giorni: errore trascurabile).
+# NOTA: pd.concat con join="left" è rimosso in pandas ≥ 2.0 → uso .join() + reindex.
+merged = brent_weekly.reindex(pompa.index).join(pompa)
+for col in ["brent_eur", "brent_7d_eur", "log_brent", "eurusd"]:
+    if col in merged.columns:
+        merged[col] = merged[col].ffill(limit=4)  # max 4 settimane ffill
+merged = merged.dropna(subset=["benzina_eur_l", "diesel_eur_l"])
 merged.to_csv("data/dataset_merged.csv")
 
 print(f"\n  Dataset unificato: {len(merged)} settimane | "

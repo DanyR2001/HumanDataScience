@@ -1,9 +1,0 @@
-lag_weeks,lag_days,F_stat,p_value,significant
-1,7,34.9128,0.0,True
-2,14,18.9606,0.0,True
-3,21,13.2233,0.0,True
-4,28,9.7638,0.0,True
-5,35,8.6264,0.0,True
-6,42,7.1229,0.0,True
-7,49,6.2088,0.0,True
-8,56,5.4107,0.0,True

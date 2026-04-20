@@ -1,7 +1,0 @@
-Evento,Serie,Delta_margine,p_ttest,p_ks,H0_delta,Classificazione
-Ucraina (Feb 2022),Benzina,237.0836,,0.0465,non rifiutata,ANTICIPAZIONE RAZIONALE / NEUTRO
-Ucraina (Feb 2022),Diesel,291.005,,0.0465,non rifiutata,ANTICIPAZIONE RAZIONALE / NEUTRO
-Iran-Israele (Giu 2025),Benzina,-67.6384,,0.2051,non rifiutata,ANTICIPAZIONE RAZIONALE / NEUTRO
-Iran-Israele (Giu 2025),Diesel,-81.6222,,0.1026,non rifiutata,ANTICIPAZIONE RAZIONALE / NEUTRO
-Hormuz (Feb 2026),Benzina,1.8793,,0.6667,non rifiutata,ANTICIPAZIONE RAZIONALE / NEUTRO
-Hormuz (Feb 2026),Diesel,25.0956,,0.9167,non rifiutata,ANTICIPAZIONE RAZIONALE / NEUTRO
