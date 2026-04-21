@@ -43,10 +43,28 @@ the baseline due to COVID-19 (WTI negative, demand collapse ~25%, structurally n
 | Brent crude oil price | Yahoo Finance via `yfinance` | `BZ=F` | Daily → weekly (W-MON) | USD/barrel → EUR/barrel |
 | EUR/USD exchange rate | Yahoo Finance via `yfinance` | `EURUSD=X` | Daily → weekly mean | — |
 | Italian retail fuel prices (pre-tax) | EU Weekly Oil Bulletin, EC | Sheet *Prices wo taxes*, cols `IT_price_wo_tax_euro95`, `IT_price_wo_tax_diesel` | Weekly (Monday) | EUR/litre |
-| Eurobob gasoline futures | Investing.com CSV export | `Eurobob Futures Historical Data.csv` | Daily → weekly | USD/tonne → EUR/litre |
-| Gas Oil ICE London futures | Investing.com CSV export | `London Gas Oil Futures Historical Data.csv` | Daily → weekly | USD/tonne → EUR/litre |
+| Eurobob gasoline futures | TradingView — manual CSV export | `Eurobob Futures Historical Data.csv` | Daily → weekly | USD/tonne → EUR/litre |
+| Gas Oil ICE London futures | Investing.com — manual CSV export | `London Gas Oil Futures Historical Data.csv` | Daily → weekly | USD/tonne → EUR/litre |
 
 **Coverage**: 380 weekly observations, 2019-01-07 → 2026-04-13.
+
+**Manual CSV exports** — the two futures files are not available via API and were obtained
+through manual browser export:
+
+- `Eurobob Futures Historical Data.csv`: exported from TradingView, ticker `NYMEX:B7H1!`
+  (Eurobob Gasoline ARA continuous front-month).
+  URL: https://it.tradingview.com/chart/v8Lm6UVY/?symbol=NYMEX%3AB7H1%21
+  Procedure: open the link → select the full date range → export via
+  "Export chart data" (CSV). Column `Price` = daily settlement in USD/tonne.
+
+- `London Gas Oil Futures Historical Data.csv`: exported from Investing.com, instrument
+  ID 1184928 (ICE Low Sulphur Gasoil Futures, London).
+  URL: https://www.investing.com/commodities/london-gas-oil-historical-data?cid=1184928
+  Procedure: open the link → set date range to 2019-01-01 → present → click
+  "Download Data" (free account required). Column `Price` = daily settlement in USD/tonne.
+
+Both files are included in the repository. To extend the analysis beyond 2026-04-13,
+repeat the manual export from the same URLs and replace the CSV files before re-running.
 
 **Unit conversions** (reproducible):
 - Brent: `brent_eur = brent_usd / eurusd`
@@ -432,9 +450,10 @@ To reproduce all results exactly:
    [energy.ec.europa.eu](https://energy.ec.europa.eu/data-and-analysis/weekly-oil-bulletin_en)
    and save to `data/eu_oil_bulletin_history.xlsx`.
 3. Eurobob and Gas Oil CSV files (`data/Eurobob Futures Historical Data.csv`,
-   `data/London Gas Oil Futures Historical Data.csv`) must be present. These are Investing.com
-   CSV exports included in the repository; update them if extending the analysis beyond
-   2026-04-13.
+   `data/London Gas Oil Futures Historical Data.csv`) must be present. These were obtained
+   via manual browser export (see **Manual CSV exports** above) and are included in the
+   repository. To extend the analysis beyond 2026-04-13, re-export from the same URLs:
+   TradingView `NYMEX:B7H1!` for Eurobob, Investing.com cid=1184928 for Gas Oil ICE.
 4. MCMC results have stochastic variation across runs (different random seeds). Stored results
    in `data/table1_changepoints.csv` and `data/table2_margin_anomaly.csv` reflect the run
    described above. Re-running will produce numerically close but not bit-identical values.
