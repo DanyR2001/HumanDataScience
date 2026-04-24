@@ -1,7 +1,0 @@
-Evento,Carburante,n_pre,n_post,KS_stat,p_value,H0
-Ucraina (Feb 2022),Benzina,25,27,1.0,0.0,RIFIUTATA
-Ucraina (Feb 2022),Diesel,25,27,1.0,0.0,RIFIUTATA
-Iran-Israele (Giu 2025),Benzina,23,20,0.5587,0.001216,RIFIUTATA
-Iran-Israele (Giu 2025),Diesel,23,20,0.5652,0.001002,RIFIUTATA
-Hormuz (Feb 2026),Benzina,26,5,0.9231,0.000247,RIFIUTATA
-Hormuz (Feb 2026),Diesel,26,5,0.8462,0.001483,RIFIUTATA

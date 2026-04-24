@@ -1,5 +1,0 @@
-Evento,Carburante,FK_stat,FK_p,FK_H0,Z_runs,p_runs,runs_verdict,DW
-Ucraina (Feb 2022),Benzina,9.6564,0.0019,RIFIUTATA,-5.042,0.0,✗ autocorrelazione rilevata,0.002
-Ucraina (Feb 2022),Diesel,3.1426,0.0763,non rifiutata,-4.482,0.0,✗ autocorrelazione rilevata,0.002
-Iran-Israele (Giu 2025),Benzina,15.1598,0.0001,RIFIUTATA,-4.999,0.0,✗ autocorrelazione rilevata,0.0
-Iran-Israele (Giu 2025),Diesel,14.1058,0.0002,RIFIUTATA,-4.999,0.0,✗ autocorrelazione rilevata,0.0

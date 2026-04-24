@@ -1,3 +1,0 @@
-Carburante,Metodo,β_up,SE_up_HAC,β_down,SE_down_HAC,rho_AR1,R&F_index,t_stat,p_asym
-Benzina,OLS+HAC,0.1698,0.1285,0.2108,0.038,N/A,0.806,-0.306,0.7598
-Diesel,OLS+HAC,0.2427,0.1802,0.1827,0.0467,N/A,1.328,0.322,0.7474
