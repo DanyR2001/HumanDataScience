@@ -14,9 +14,6 @@ Questo script:
        - Benzina: prezzi_pompa − Eurobob (ARA, EUR/litro)
        - Diesel:  prezzi_pompa − Gas Oil (London ICE, EUR/litro)
        [dati: Investing.com, file CSV hardcoded]
-     NOTA: il metodo Yield (Brent × yield fisso) è stato rimosso perché
-     confonde la raffinazione con la distribuzione. Eurobob/Gas Oil sono
-     il prezzo wholesale reale pagato dai distributori italiani.
      LIMITAZIONE: i distributori italiani possono usare contratti forward
      o prezzi CIF-Genova anziché spot ARA/ICE; il crack spread misurato
      è una proxy del margine reale, non il margine reale stesso.

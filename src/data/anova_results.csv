@@ -1,0 +1,5 @@
+Evento,Carburante,F_stat,p_value,mean_pre,mean_shock6w,mean_post,H0
+Ucraina (Feb 2022),Benzina,142.7796,0.0,697.0842,967.9017,1065.9579,RIFIUTATA
+Ucraina (Feb 2022),Diesel,217.4521,0.0,694.8088,1036.2917,1155.36,RIFIUTATA
+Iran-Israele (Giu 2025),Benzina,5.6189,0.00707,718.6996,702.9167,683.5186,RIFIUTATA
+Iran-Israele (Giu 2025),Diesel,3.7614,0.031854,741.7643,720.455,705.6392,RIFIUTATA

@@ -1,0 +1,49 @@
+fonte,tipo,descrizione,p_value,BH_global_reject,p_value_BH_adjusted
+table2_Welch_t,confirmatory,Δmargine Ucraina (Feb 2022) | Benzina | Crack Eurobob,0.108,False,0.29713745454545454
+table2_Welch_t,confirmatory,Δmargine Ucraina (Feb 2022) | Diesel | Crack Gas Oil,0.0645,False,0.29713745454545454
+table2_Welch_t,confirmatory,Δmargine Iran-Israele (Giu 2025) | Benzina | Crack Eurobob,0.1924,False,0.29713745454545454
+table2_Welch_t,confirmatory,Δmargine Iran-Israele (Giu 2025) | Diesel | Crack Gas Oil,0.0035,True,0.028
+DiD,confirmatory,DiD Ucraina (Feb 2022) | IT vs Germania | Benzina,0.195334,False,0.29713745454545454
+DiD,confirmatory,DiD Ucraina (Feb 2022) | IT vs Germania | Diesel,0.158652,False,0.29713745454545454
+DiD,confirmatory,DiD Iran-Israele (Giu 2025) | IT vs Germania | Benzina,0.807039,False,0.807039
+DiD,confirmatory,DiD Iran-Israele (Giu 2025) | IT vs Germania | Diesel,0.204282,False,0.29713745454545454
+DiD,confirmatory,DiD Hormuz (Feb 2026) | IT vs Germania | Benzina,0.001871,True,0.028
+DiD,confirmatory,DiD Hormuz (Feb 2026) | IT vs Germania | Diesel,0.106075,False,0.29713745454545454
+DiD,confirmatory,DiD Ucraina (Feb 2022) | IT vs Svezia | Benzina,0.55496,False,0.6830276923076923
+DiD,confirmatory,DiD Ucraina (Feb 2022) | IT vs Svezia | Diesel,0.179069,False,0.29713745454545454
+DiD,confirmatory,DiD Iran-Israele (Giu 2025) | IT vs Svezia | Benzina,0.17807,False,0.29713745454545454
+DiD,confirmatory,DiD Iran-Israele (Giu 2025) | IT vs Svezia | Diesel,0.285873,False,0.381164
+DiD,confirmatory,DiD Hormuz (Feb 2026) | IT vs Svezia | Benzina,0.672725,False,0.7452362666666666
+DiD,confirmatory,DiD Hormuz (Feb 2026) | IT vs Svezia | Diesel,0.698659,False,0.7452362666666666
+Granger_benzina,exploratory,Granger benzina lag=1w,0.0,,
+Granger_benzina,exploratory,Granger benzina lag=2w,0.0,,
+Granger_benzina,exploratory,Granger benzina lag=3w,0.0,,
+Granger_benzina,exploratory,Granger benzina lag=4w,0.0,,
+Granger_benzina,exploratory,Granger benzina lag=5w,0.0,,
+Granger_benzina,exploratory,Granger benzina lag=6w,0.0,,
+Granger_benzina,exploratory,Granger benzina lag=7w,0.0,,
+Granger_benzina,exploratory,Granger benzina lag=8w,0.0,,
+Granger_diesel,exploratory,Granger diesel lag=1w,0.0,,
+Granger_diesel,exploratory,Granger diesel lag=2w,0.0,,
+Granger_diesel,exploratory,Granger diesel lag=3w,0.0,,
+Granger_diesel,exploratory,Granger diesel lag=4w,0.0,,
+Granger_diesel,exploratory,Granger diesel lag=5w,0.0,,
+Granger_diesel,exploratory,Granger diesel lag=6w,0.0,,
+Granger_diesel,exploratory,Granger diesel lag=7w,0.0,,
+Granger_diesel,exploratory,Granger diesel lag=8w,0.0,,
+KS,exploratory,KS Ucraina (Feb 2022) | Benzina,25.0,,
+KS,exploratory,KS Ucraina (Feb 2022) | Diesel,25.0,,
+KS,exploratory,KS Iran-Israele (Giu 2025) | Benzina,23.0,,
+KS,exploratory,KS Iran-Israele (Giu 2025) | Diesel,23.0,,
+KS,exploratory,KS Hormuz (Feb 2026) | Benzina,26.0,,
+KS,exploratory,KS Hormuz (Feb 2026) | Diesel,26.0,,
+ANOVA,exploratory,ANOVA Ucraina (Feb 2022) | Benzina,0.0,,
+ANOVA,exploratory,ANOVA Ucraina (Feb 2022) | Diesel,0.0,,
+ANOVA,exploratory,ANOVA Iran-Israele (Giu 2025) | Benzina,0.00707,,
+ANOVA,exploratory,ANOVA Iran-Israele (Giu 2025) | Diesel,0.031854,,
+Chow,exploratory,Chow Ucraina (Feb 2022) | Benzina,1e-05,,
+Chow,exploratory,Chow Ucraina (Feb 2022) | Diesel,0.0,,
+Chow,exploratory,Chow Iran-Israele (Giu 2025) | Benzina,0.0,,
+Chow,exploratory,Chow Iran-Israele (Giu 2025) | Diesel,0.0,,
+Chow,exploratory,Chow Hormuz (Feb 2026) | Benzina,0.0,,
+Chow,exploratory,Chow Hormuz (Feb 2026) | Diesel,0.0,,

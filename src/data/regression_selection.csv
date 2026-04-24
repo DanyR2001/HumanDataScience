@@ -1,0 +1,7 @@
+Evento,Serie,BP_p,LjungBox_p_min,DW,rho_AR1,SE_inflation_%,Raccomandazione
+Ucraina (Feb 2022),Benzina,0.0001,0.0,0.178,0.909,105.0,Bayesian StudentT + AR(1)
+Ucraina (Feb 2022),Diesel,0.0021,0.0,0.209,0.893,79.5,Bayesian StudentT + AR(1)
+Iran-Israele (Giu 2025),Benzina,0.0194,0.0,0.192,0.903,55.1,Bayesian StudentT + AR(1)
+Iran-Israele (Giu 2025),Diesel,0.0608,0.0,0.151,0.924,47.3,Bayesian StudentT + AR(1)
+Hormuz (Feb 2026),Benzina,0.0052,0.0001,0.289,0.845,107.3,Bayesian StudentT + AR(1)
+Hormuz (Feb 2026),Diesel,0.0019,0.0,0.195,0.902,108.3,Bayesian StudentT + AR(1)

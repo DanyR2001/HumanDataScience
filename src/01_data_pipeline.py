@@ -74,10 +74,9 @@ try:
     brent.columns = ["brent_usd"]
     brent.index = pd.to_datetime(brent.index)
     brent.dropna(inplace=True)
-
-    # Rolling average 7 giorni e log
-    brent["brent_7d_usd"] = brent["brent_usd"].rolling(7, min_periods=1).mean()
-
+        
+    brent["brent_7d_usd"] = brent["brent_usd"]
+    
     # Resample settimanale
     brent_weekly = brent[["brent_usd", "brent_7d_usd"]].resample("W-MON").mean()
 
@@ -115,7 +114,6 @@ except Exception as e:
     print(f"  ERRORE CRITICO download Brent: {e}")
     missing_log["brent"] = ["download_fallito_completamente"]
     brent_weekly = None
-
 
 # ─────────────────────────────────────────
 # 3. PREZZI POMPA ITALIA — SENZA TASSE (EUR/litro)
@@ -267,13 +265,17 @@ for url_idx, (eu_url, (label, fname, is_pretax)) in enumerate(zip(EU_URLS, EU_UR
             benzina_it.rename("benzina_eur_l"),
             diesel_it.rename("diesel_eur_l"),
         ], axis=1)
+        print(pompa.index)
         pompa = pompa[pompa.index >= "2019-01-01"]
         pompa.dropna(how="all", inplace=True)
         pompa.sort_index(inplace=True)
         pompa.index = pd.to_datetime(pompa.index)
 
+        print(pompa.info())
         # Resample a W-MON per allineamento col Brent
         pompa = pompa.resample("W-MON").mean()
+        print(pompa.info())
+
 
         used_pretax = is_pretax
         print(f"  OK: {label} — {len(pompa.dropna())} settimane")
@@ -326,16 +328,8 @@ else:
 
 # ─────────────────────────────────────────
 # 4. LOG TRANSFORM (no rolling average)
-#
-# NOTA METODOLOGICA: il rolling 4 settimane è stato rimosso per simmetria
-# con il Brent, che usa solo una rolling 7gg giornaliera prima del resample.
-# Applicare uno smoothing asimmetrico ai prezzi pompa introduceva un lag
-# artificiale di ~2 settimane, distorcendo le stime di trasmissione.
-# Entrambe le serie sono ora usate ai valori settimanali nativi.
-# Le colonne "benzina_4w" e "diesel_4w" sono mantenute come alias
-# per retrocompatibilità con gli script downstream, ma coincidono ora
-# con i valori settimanali grezzi.
 # ─────────────────────────────────────────
+
 pompa["benzina_4w"]  = pompa["benzina_eur_l"]   # alias per retrocompatibilità
 pompa["diesel_4w"]   = pompa["diesel_eur_l"]    # alias per retrocompatibilità
 pompa["log_benzina"] = np.log(pompa["benzina_eur_l"])

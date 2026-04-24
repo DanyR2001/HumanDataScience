@@ -1,0 +1,5 @@
+baseline,serie,n_weeks,mean,std,soglia_2sigma
+2019_full,margine_benz_crack,52,0.16827,0.01886,0.03772
+2019_full,margine_dies_crack,52,0.14878,0.01834,0.03667
+Full_2021,margine_benz_crack,52,0.18162,0.02423,0.04846
+Full_2021,margine_dies_crack,52,0.18196,0.02612,0.05225
