@@ -1,0 +1,5 @@
+Evento,Carburante,n_pre,n_shock6w,n_post,H_stat,kw_p,kw_H0,posthoc_pre_vs_shock,posthoc_shock_vs_post,posthoc_pre_vs_post,warning_serial
+Ucraina (Feb 2022),Benzina,25,6,21,38.745,0.0,RIFIUTATA,0.0,0.5255,0.0,Sì - gruppi temporali non indipendenti
+Ucraina (Feb 2022),Diesel,25,6,21,38.7011,0.0,RIFIUTATA,0.0,0.5847,0.0,Sì - gruppi temporali non indipendenti
+Iran-Israele (Giu 2025),Benzina,23,6,14,6.106,0.0472,RIFIUTATA,1.0,0.0262,0.1402,Sì - gruppi temporali non indipendenti
+Iran-Israele (Giu 2025),Diesel,23,6,14,4.5919,0.1007,non rifiutata,0.809,0.0977,0.2636,Sì - gruppi temporali non indipendenti

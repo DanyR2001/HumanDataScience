@@ -36,6 +36,7 @@ SCRIPTS = [
     ("02_core_analysis.py",      "Analisi principale: changepoint + test margine (H0)"),
     ("03_statistical_tests.py",  "Test ausiliari: Granger + R&F + KS + ANOVA + Chow + DiD (parallel trends)"),
     ("04_global_corrections.py", "BH correction globale su tutti i p-value del paper"),
+    ("05_nonparametric_validation.py", "Test non parametrici per validazione"),
 ]
 
 print("=" * 70)
