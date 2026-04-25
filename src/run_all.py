@@ -55,6 +55,13 @@ La risposta segue una catena decisionale:
     I test esplorativi (Granger, R&F, KS, ANOVA, Chow) sono riportati
     come evidenza di contesto ma non entrano nella famiglia BH.
 
+  PASSO 6 — L'assunzione distributiva StudentT e' corretta?
+    Per ogni scenario (evento x serie) fittiamo quattro distribuzioni
+    sui residui OLS piecewise (log-prezzi) e sui crack spread post-shock:
+    Normale, StudentT (scelta attuale), Skew-Normal, Skewed-T (Fernandez-Steel).
+    Il confronto AIC identifica se e' necessaria una distribuzione asimmetrica.
+    La guida operativa mostra come modificare il modello PyMC in script 02.
+
 Output principali:
   data/table1_changepoints.csv      -> Table 1: tau, CI 95%, lag D
   data/table2_margin_anomaly.csv    -> Table 2: test anomalia + BH locale + globale
@@ -96,6 +103,11 @@ PIPELINE = [
         "05_global_corrections.py",
         "BH correction globale",
         "FDR <= 5% su tutti i test confirmatory degli script 03 e 04",
+    ),
+    (
+        "06_distribution_check.py",
+        "Verifica assunzione distributiva",
+        "StudentT vs Skew-Normal vs Skewed-T sui residui OLS e crack spread",
     ),
 ]
 
@@ -153,6 +165,8 @@ KEY_FILES = [
     ("plots/04_granger.png",           "Granger causality Brent -> pompa"),
     ("plots/04_rf.png",                "Rockets & Feathers scatter"),
     ("plots/04_did.png",               "DiD delta con CI 95% HC3"),
+    ("data/distribution_check.csv",    "Distrib. check — AIC per 4 distribuzioni + raccomandazione"),
+    ("plots/06_distrib_summary.png",   "ΔAIC heatmap: StudentT vs Skew-Normal vs Skewed-T"),
 ]
 
 for fname, descrizione in KEY_FILES:
@@ -188,6 +202,10 @@ print("""
    # Tutti i test confirmatory con p aggiustato
    bh = pd.read_csv("data/global_bh_corrections.csv")
    print(bh[bh["BH_global_reject"] == True])
+
+   # Verifica assunzione distributiva (script 06)
+   dc = pd.read_csv("data/distribution_check.csv")
+   print(dc[["label","best_distribution","raccomandazione","ΔAIC_skewt_vs_t"]])
 """)
 
 print("=" * 70)

@@ -31,17 +31,18 @@ Se è significativamente più alto, c'è un'anomalia che merita spiegazione.
 
 ---
 
-## La struttura della pipeline: cinque passi in sequenza
+## La struttura della pipeline: sei passi in sequenza
 
-La pipeline è composta da cinque script Python che si eseguono in ordine. Ciascuno
+La pipeline è composta da sei script Python che si eseguono in ordine. Ciascuno
 risponde a una domanda precisa e passa i risultati al successivo.
 
 ```
-01_data_pipeline.py    → Raccoglie e pulisce i dati
-02_changepoint.py      → Quando si è rotta la dinamica dei prezzi?
-03_margin_hypothesis.py → Il margine è anomalo rispetto al 2019?
-04_auxiliary_evidence.py → L'anomalia è specifica all'Italia?
-05_global_corrections.py → Quanti risultati reggono dopo correzione statistica?
+01_data_pipeline.py        → Raccoglie e pulisce i dati
+02_changepoint.py          → Quando si è rotta la dinamica dei prezzi?
+03_margin_hypothesis.py    → Il margine è anomalo rispetto al 2019?
+04_auxiliary_evidence.py   → L'anomalia è specifica all'Italia?
+05_global_corrections.py   → Quanti risultati reggono dopo correzione statistica?
+06_distribution_check.py   → L'assunzione distributiva usata era corretta?
 ```
 
 ---
@@ -61,7 +62,7 @@ Raccoglie da fonti pubbliche tre serie di dati settimanali:
   rappresentano il costo all'ingrosso che i distributori effettivamente pagano sul
   mercato spot di Amsterdam-Rotterdam-Anversa.
 
-Il risultato è un dataset unificato di 381 settimane (gennaio 2019 – aprile 2026).
+Il risultato è un dataset unificato di **381 settimane** (gennaio 2019 – aprile 2026).
 
 ### Perché queste fonti
 
@@ -88,8 +89,8 @@ Il crack spread si calcola così:
 crack spread = prezzo pompa (netto tasse) − prezzo wholesale europeo
 ```
 
-Dalla pipeline: la media del crack spread benzina nel 2019 è **0.168 EUR/litro**,
-con deviazione standard di 0.019 EUR/litro. Quella del diesel è **0.149 EUR/litro**,
+Dalla pipeline: la media del crack spread **benzina** nel 2019 è **0.168 EUR/litro**,
+con deviazione standard di 0.019 EUR/litro. Quella del **diesel** è **0.149 EUR/litro**,
 deviazione standard 0.018 EUR/litro.
 
 Questi numeri diventano il nostro punto di riferimento assoluto.
@@ -108,6 +109,9 @@ Il modello individua un **changepoint** τ (tau): la data in cui la traiettoria 
 log-prezzi ha subito una rottura strutturale. Il modello è "bayesiano", il che
 significa che non restituisce solo un numero puntuale ma un'intera distribuzione
 di probabilità su quando potrebbe essere avvenuta la rottura.
+
+Come effetto collaterale, il passo 2 produce tre diagnostici statistici
+(DW, SW, BP) che guidano la scelta dei test nel passo 3.
 
 ### Analogia: il termostato che si regola
 
@@ -138,17 +142,21 @@ Risultati reali dalla pipeline:
 
 | Evento | Serie | τ stimato | Lag D | Convergenza MCMC |
 |---|---|---|---|---|
-| Ucraina (24 feb 2022) | Benzina | 3 gen 2022 | −52 giorni | ✓ Rhat=1.001 |
+| Ucraina (24 feb 2022) | Brent | 13 dic 2021 | −73 giorni | ⚠ Rhat=1.162 (dubbia) |
+| Ucraina | Benzina | 3 gen 2022 | −52 giorni | ✓ Rhat=1.001 |
 | Ucraina | Diesel | 3 gen 2022 | −52 giorni | ✓ Rhat=1.004 |
-| Iran-Israele (13 giu 2025) | Benzina | 28 apr 2025 | −46 giorni | ✓ Rhat=1.002 |
+| Iran-Israele (13 giu 2025) | Brent | 28 apr 2025 | −46 giorni | ✓ Rhat=1.002 |
+| Iran-Israele | Benzina | 28 apr 2025 | −46 giorni | ✓ Rhat=1.002 |
 | Iran-Israele | Diesel | 5 mag 2025 | −39 giorni | ✓ Rhat=1.001 |
-| Hormuz (28 feb 2026) | Benzina | 2 mar 2026 | +2 giorni | ✓ Rhat=1.002 |
+| Hormuz (28 feb 2026) | Brent | 16 feb 2026 | −12 giorni | ✓ Rhat=1.002 |
+| Hormuz | Benzina | 2 mar 2026 | +2 giorni | ✓ Rhat=1.002 |
 | Hormuz | Diesel | 23 feb 2026 | −5 giorni | ✓ Rhat=1.001 |
 
 **Interpretazione:** per Ucraina e Iran-Israele il mercato aveva anticipato lo shock
-di 39–73 giorni. I prezzi wholesale stavano già salendo ben prima dell'evento formale,
-coerentemente con l'evidenza che i mercati futures incorporano aspettative geopolitiche.
-Per Hormuz (crisi più improvvisa) il changepoint coincide quasi esattamente con l'evento.
+di 39–52 giorni (prezzi e benzina/diesel). Per Hormuz (crisi più improvvisa)
+il changepoint coincide quasi esattamente con l'evento (±12 giorni). Il Brent
+per Ucraina ha Rhat=1.162 > 1.05, segnalato come convergenza dubbia — quel
+risultato puntuale va trattato con cautela maggiore.
 
 ### Cosa sono Rhat e MCMC
 
@@ -156,34 +164,30 @@ Il modello bayesiano stima la distribuzione del changepoint tramite simulazione
 stocastica (**MCMC — Markov Chain Monte Carlo**): fa girare quattro "catene" di
 campioni che esplorano lo spazio delle soluzioni possibili. **Rhat** (R-hat) misura
 se le quattro catene hanno convergito alla stessa risposta: valori vicini a 1.00 indicano
-convergenza, valori > 1.05 indicano problemi. Il Brent per Ucraina ha Rhat=1.162,
-segnalato come "convergenza dubbia" — il risultato per quella serie va trattato con
-maggiore cautela.
+convergenza, valori > 1.05 indicano problemi.
 
 ### I diagnostici OLS che motivano i test successivi
 
-Come effetto collaterale del modello di regressione, il passo 2 produce tre diagnostici
-sulla qualità statistica dei residui, che guidano la scelta dei test nel passo 3:
+Come effetto collaterale, la regressione piecewise produce tre diagnostici:
 
 **Durbin-Watson (DW)** — misura l'autocorrelazione. Un valore normale è intorno a 2.
-Valori molto bassi (es. DW = 0.29–0.42 osservati in quasi tutte le serie) indicano
+Valori molto bassi (DW = 0.29–0.42 osservati nella maggioranza delle serie) indicano
 autocorrelazione positiva forte: ciò che succede questa settimana è molto simile a
 ciò che succedeva la settimana scorsa. Questo è un problema per i test classici.
 
 **Shapiro-Wilk (SW)** — testa se i residui seguono una distribuzione normale. Se il
 p-value SW è molto piccolo (< 0.05), i residui *non* sono normali. Osservato per
-Ucraina benzina (p≈0) e diesel (p=0.0002), Hormuz benzina (p=0.0003).
+Ucraina benzina (p≈0), Ucraina diesel (p=0.0002), Hormuz benzina (p=0.0003).
 
-**Breusch-Pagan (BP)** — testa se la varianza dei residui è costante nel tempo. Se non
-lo è (eteroschedasticità), gli errori standard dei test sono distorrti. Osservato per
-Iran diesel (p=0.021) e Hormuz benzina (p=0.0098).
+**Breusch-Pagan (BP)** — testa se la varianza dei residui è costante nel tempo
+(eteroschedasticità). Osservato per Iran diesel (p=0.021) e Hormuz benzina (p=0.010).
 
 ---
 
 ## PASSO 3 — Test sull'anomalia del margine (`03_margin_hypothesis.py`)
 
 Questo è il cuore dell'analisi. Risponde alla domanda: **il margine lordo nel periodo
-post-shock è statisticamente diverso da quello del 2019?**
+post-shock è statisticamente superiore a quello del 2019?**
 
 ### L'ipotesi nulla e l'ipotesi alternativa
 
@@ -202,15 +206,14 @@ a danno dei consumatori.
 
 ### La soglia di anomalia: ±2σ del 2019
 
-Una variazione del margine può essere casuale (ogni settimana il margine oscilla
-naturalmente) oppure sistematica (qualcosa di strutturale è cambiato). Per distinguerle
+Una variazione del margine può essere casuale oppure sistematica. Per distinguerle
 usiamo la **deviazione standard (σ) del 2019**: misura quanto oscillava normalmente
 il crack spread in un anno tranquillo.
 
-La soglia è posta a **2σ** sopra la media del 2019. Perché 2σ? In una distribuzione
-normale, circa il 95% dei valori cade entro ±2σ dalla media. Se il margine post-shock
-supera μ_2019 + 2σ, vuol dire che quel livello sarebbe stato eccezionale anche in un
-anno normale — quindi non è spiegabile dalla variabilità ordinaria.
+La soglia è posta a **2σ** sopra la media del 2019. In una distribuzione normale, circa
+il 95% dei valori cade entro ±2σ dalla media. Se il margine post-shock supera
+μ_2019 + 2σ, vuol dire che quel livello sarebbe stato eccezionale anche in un anno
+normale — quindi non è spiegabile dalla variabilità ordinaria.
 
 Valori dalla pipeline:
 - Benzina 2019: μ = 0.168 EUR/L, 2σ = 0.038 EUR/L → soglia anomalia = 0.206 EUR/L
@@ -218,13 +221,11 @@ Valori dalla pipeline:
 
 ### Perché non basta un solo test
 
-I diagnostici del passo 2 hanno rivelato tre problemi nelle serie di dati:
-autocorrelazione forte, non-normalità in alcune serie, eteroschedasticità in altre.
-Ogni problema viola le assunzioni di un test diverso. Usare un solo test rischierebbe
-di ottenere risultati distorti.
-
-La soluzione è usare una **batteria di test complementari**, ciascuno robusto a un
-sottoinsieme diverso dei problemi. Se più test concordano, il risultato è più affidabile.
+I diagnostici del passo 2 hanno rivelato tre problemi: autocorrelazione forte (DW basso),
+non-normalità in alcune serie (SW significativo), eteroschedasticità in altre (BP
+significativo). Ogni problema viola le assunzioni di un test diverso. La soluzione è
+usare una **batteria di test complementari**, ciascuno robusto a un sottoinsieme diverso
+dei problemi.
 
 ---
 
@@ -232,36 +233,23 @@ sottoinsieme diverso dei problemi. Se più test concordano, il risultato è più
 
 #### Cos'è in parole semplici
 
-Immaginate di avere due liste di numeri: 52 osservazioni settimanali del margine nel
-2019 (la nostra "normalità") e 20–27 osservazioni settimanali nel periodo post-shock.
-Il Welch t-test a campione singolo risponde alla domanda: **la media della lista
-post-shock è abbastanza lontana dalla media del 2019 da non poter essere spiegata
-dalla casualità?**
+Confronta la media del margine nel periodo post-shock con la media del 2019. Risponde a:
+**la media della lista post-shock è abbastanza lontana dalla media del 2019 da non
+poter essere spiegata dalla casualità?**
 
-"Abbastanza lontana" dipende da due cose: la distanza effettiva (il delta) e la
-dispersione (quanto variano i valori). Se i valori variano molto, serve un delta grande
-per concludere che c'è qualcosa di reale. Se variano poco, anche un delta piccolo è
-significativo.
+La variante "Welch" non assume varianze uguali tra i due gruppi — appropriato quando
+confrontiamo un anno intero (2019, n=52) con una finestra di crisi (n=20-27).
 
 #### Perché è il test primario
 
-Il Welch t è il test standard nella letteratura economica per confronti di questo tipo.
-Mantenerlo come primario garantisce confrontabilità con altri studi. Usa la variante
-"Welch" (invece del t-test classico) che non assume varianze uguali tra i due campioni
-— più corretto quando confrontiamo un'intera distribuzione annuale (2019, n=52) con
-una finestra di crisi (n=20-27).
+È lo standard nella letteratura economica per confronti di questo tipo. Mantenerlo come
+primario garantisce confrontabilità con altri studi. Entra come test principale nella
+correzione BH (vedi Passo 5).
 
 #### Il p-value: come si interpreta
 
-Il **p-value** è la probabilità di osservare un risultato così estremo (o più estremo)
-*se H₀ fosse vera*. Un p-value di 0.05 significa: "se il margine post-shock fosse
-davvero uguale al 2019, avrei solo il 5% di probabilità di ottenere questo risultato
-per pura casualità."
-
+Il **p-value** è la probabilità di osservare un risultato così estremo *se H₀ fosse vera*.
 Convenzione: p < 0.05 → "statisticamente significativo" (rifiutiamo H₀).
-
-Ma attenzione: un p-value piccolo non dice *quanto è grande* l'effetto, solo che
-esiste. Un effetto minuscolo può avere p piccolo con campioni grandi.
 
 #### Risultati
 
@@ -275,13 +263,12 @@ esiste. Un effetto minuscolo può avere p piccolo con campioni grandi.
 | Hormuz (prel.) | Diesel | −0.010 EUR/L | −0.140 | 0.5532 | n.s. non rifiuta |
 
 **Interpretazione:** In tutti i casi non preliminari (Ucraina e Iran-Israele) il margine
-post-shock è significativamente superiore al 2019. Il delta è economicamente
-rilevante: +0.089 EUR/L per la benzina Ucraina significa che ogni litro costava
-circa 9 centesimi in più del normale solo come margine del distributore.
+post-shock è significativamente superiore al 2019. Il delta per Ucraina benzina (+0.089
+EUR/L) significa che ogni litro costava circa 9 centesimi in più del normale solo come
+margine del distributore.
 
-**Il problema di questo test:** come visto nel passo 2, le serie hanno autocorrelazione
-forte (DW ≈ 0.3–0.4). Questo gonfia artificialmente la statistica t, perché il test
-tratta 25 osservazioni settimanali come se fossero 25 misurazioni indipendenti — ma
+**Il problema di questo test:** con DW ≈ 0.3–0.4, le serie hanno autocorrelazione
+forte. Il test tratta 25 osservazioni settimanali come se fossero indipendenti, ma
 se ogni settimana è molto simile alla precedente, le informazioni reali sono molte meno.
 Per questo il Welch t non è sufficiente da solo.
 
@@ -296,39 +283,26 @@ del 2019 (n=52) e tutte quelle post-shock (n=20-27), le mette in ordine dal valo
 basso al più alto, e poi chiede: **le osservazioni post-shock tendono a stare in posizioni
 più alte nella classifica rispetto a quelle del 2019?**
 
-Analogia: immaginate due squadre di ciclisti che partecipano alla stessa gara. Non vi
-interessa quanto ciascuno è veloce in valore assoluto, solo se i ciclisti di una squadra
-arrivano sistematicamente prima degli altri. Il Mann-Whitney fa esattamente questo.
-
-#### Perché è necessario
-
-Il Mann-Whitney non assume che i dati seguano una distribuzione normale (non è
-parametrico). Questo è cruciale perché i diagnostici SW hanno mostrato non-normalità
-per Ucraina e Hormuz benzina. Un test non parametrico non è "peggiore" del t-test:
-è semplicemente più robusto quando i dati non sono normali.
+Analogia: immaginate due squadre di ciclisti nella stessa gara. Non vi interessa quanto
+ciascuno è veloce in valore assoluto, solo se i ciclisti di una squadra arrivano
+sistematicamente prima degli altri.
 
 #### Come confronta: post vs distribuzione 2019 intera
 
-In questa pipeline il MW confronta la finestra post-shock con l'intera distribuzione
-del 2019 (52 osservazioni), non con la finestra pre-shock dello stesso evento. Perché?
+Il MW confronta la finestra post-shock con l'intera distribuzione del 2019 (52
+osservazioni), non con la finestra pre-shock dello stesso evento. Perché?
 
-Perché la finestra pre-shock (i mesi prima della guerra, ad esempio) è già potenzialmente
-"contaminata": i prezzi cominciavano già a muoversi. Se usassimo quella come riferimento,
+La finestra pre-shock (i mesi prima della guerra) è già potenzialmente "contaminata":
+i prezzi e i margini cominciavano già a muoversi. Se usassimo quella come riferimento,
 staremmo confrontando il post-shock con un pre-shock già anomalo, sottostimando l'effetto.
-
-Usare il 2019 intero come riferimento ci dà una baseline pulita e allineata con H₀:
-il margine "normale" è quello del 2019, non quello dell'estate prima della guerra.
+Usare il 2019 intero ci dà una baseline pulita e allineata con H₀.
 
 #### Statistiche aggiuntive
 
-Il Mann-Whitney produce statistiche descrittive utili:
-
-- **AUC** (Area Under the Curve): probabilità che un'osservazione post-shock scelta
-  a caso sia maggiore di una del 2019. AUC = 0.5 = nessuna differenza, AUC = 1.0 =
-  tutte le post-shock sono maggiori di tutte le 2019.
-- **Hodges-Lehmann (HL)**: stima robusta della differenza tipica tra i due gruppi
-  (analoga alla mediana delle differenze). Meno sensibile agli outlier rispetto alla media.
-- **Cliff's delta**: effect size tra −1 e +1. Regola empirica: |δ| < 0.147 trascurabile,
+- **AUC**: probabilità che un'osservazione post-shock sia maggiore di una del 2019.
+  AUC = 0.5 = nessuna differenza, AUC = 1.0 = ogni valore post supera ogni valore 2019.
+- **Hodges-Lehmann (HL)**: stima robusta della differenza tipica tra i due gruppi.
+- **Cliff's delta**: effect size tra −1 e +1. Regola: |δ| < 0.147 trascurabile,
   0.147–0.33 piccolo, 0.33–0.474 medio, > 0.474 grande.
 
 #### Risultati
@@ -340,9 +314,8 @@ Il Mann-Whitney produce statistiche descrittive utili:
 | Iran-Israele | Benzina | 1.000 | +1.000 | **grande** | 0.0000 | ★★★ RIFIUTA |
 | Iran-Israele | Diesel | 0.940 | +0.881 | **grande** | 0.0000 | ★★★ RIFIUTA |
 
-AUC = 1.000 per Iran-Israele benzina significa che ogni singola settimana del periodo
-post-shock ha avuto un margine superiore a ogni singola settimana del 2019. Un segnale
-di anomalia di livello assoluto.
+AUC = 1.000 per Iran-Israele benzina: ogni singola settimana post-shock ha avuto un
+margine superiore a ogni singola settimana del 2019.
 
 ---
 
@@ -350,55 +323,38 @@ di anomalia di livello assoluto.
 
 #### Cos'è in parole semplici
 
-Il permutation test è un approccio radicalmente diverso: invece di appoggiarsi a
-formule matematiche, usa la simulazione. L'idea è:
-
-1. Osserviamo la differenza reale (post − pre nel crack spread mediano): chiamiamola D_osservata.
-2. Mescoliamo casualmente i dati (pre e post insieme) migliaia di volte e ogni volta
-   calcoliamo la differenza: costruiamo così la distribuzione di quello che otterremmo
-   *per puro caso*.
+Il permutation test usa la simulazione invece di formule matematiche:
+1. Osserviamo la differenza reale nel crack spread mediano: D_osservata.
+2. Mescoliamo casualmente i dati migliaia di volte e ogni volta calcoliamo la differenza.
 3. Il p-value è: in quante simulazioni su 10.000 ottengo una differenza ≥ D_osservata?
-   Se solo nel 2% dei casi, p = 0.02.
 
 Analogia: avete due mazzi di carte e volete sapere se uno è "più alto" dell'altro.
 Mischiate tutto e ridistribuite a caso 10.000 volte. Quante volte, per puro caso,
-un mazzo viene fuori mediamente più alto dell'altro? Se quasi mai, allora la differenza
-originale non era dovuta al caso.
+un mazzo viene fuori mediamente più alto dell'altro?
 
 #### Perché "a blocchi"
 
-La versione standard del permutation test mescola le singole osservazioni —
-ma questo ignora l'autocorrelazione: le settimane adiacenti sono correlate, e
-rimescolarle singolarmente spezza quella struttura, rendendo il test troppo ottimistico.
-
+La versione standard mescola le singole osservazioni — ma questo ignora l'autocorrelazione.
 La versione **a blocchi** (block size = 4 settimane ≈ 1 mese) mescola blocchi di 4
-settimane consecutive invece di singole osservazioni. In questo modo preserva
-la struttura temporale locale nelle permutazioni. È una soluzione parziale
-all'autocorrelazione, molto più realistica del test standard.
+settimane consecutive, preservando la struttura temporale locale.
 
-#### Il problema dello split: τ_price vs τ_margin (e perché sono entrambi implementati)
+#### Il problema dello split: τ_price vs τ_margin
 
-Il permutation test confronta un gruppo "pre" con un gruppo "post". Ma dove mettiamo
-il confine? Ci sono due scelte ragionevoli, e questa pipeline le implementa entrambe:
+Il test confronta un gruppo "pre" con un gruppo "post". Il confine (split) è cruciale,
+e questa pipeline implementa due varianti:
 
 **Split principale (τ_price):** usa come confine il changepoint del *prezzo* wholesale
-stimato nel passo 2. Perché? Perché τ_price è *esogeno* al margine — è stato stimato
-guardando solo i prezzi all'ingrosso, non il margine. Non c'è circolarità. La finestra
-"pre" termina esattamente quando il prezzo wholesale ha cominciato a muoversi,
-garantendo che il gruppo di controllo sia pulito. Questo split entra nella correzione BH.
+stimato nel passo 2. È *esogeno* al margine — nessuna circolarità — e la finestra "pre"
+termina esattamente quando il prezzo ha cominciato a muoversi. **Questo split entra
+nella correzione BH globale.**
 
-**Split robustness (τ_margin):** usa come confine il changepoint del *margine* stesso
-(stimato con lo stesso metodo brute-force del passo 2, ma sul crack spread invece
-che sul prezzo). È endogeno — il confine è scelto guardando la stessa variabile
-che stiamo testando — ma cattura esattamente la rottura che ci interessa.
-Non entra nella BH, serve come verifica.
+**Split robustness (τ_margin):** usa il changepoint del *margine* stesso. È endogeno
+ma cattura esattamente la rottura del crack spread. **Non entra nella BH**, serve solo
+come verifica di robustezza.
 
-**Perché entrambi?** Esiste una tensione metodologica, soprattutto per Ucraina:
-τ_price = 3 gennaio 2022, τ_margin = 14 marzo 2022 (gap di 70 giorni). Con lo split
-a τ_price, la finestra post include 10 settimane in cui il margine stava ancora salendo
-gradualmente — il che diluisce il delta mediano nel test. Con τ_margin come split,
-il segnale è molto più netto. Entrambi dicono qualcosa di vero su fenomeni diversi:
-*quando si è mosso il prezzo* vs *quando si è rotto il margine*.
+Per Ucraina, τ_price = 3 gennaio 2022, τ_margin = 14 marzo 2022 (gap di 70 giorni).
+Con τ_price come split, le 10 settimane di margine che stava salendo gradualmente finiscono
+nel "post" diluendo il segnale. Con τ_margin, il segnale è molto più netto.
 
 #### Risultati
 
@@ -422,24 +378,13 @@ che il gap di 7 giorni tra τ_margin e τ_price in quel caso è empiricamente tr
 
 #### Cos'è in parole semplici
 
-HAC sta per **Heteroscedasticity and Autocorrelation Consistent**. È una tecnica
-che prende il test t classico e lo "corregge" per tener conto dell'autocorrelazione
-e dell'eteroschedasticità nei residui.
+HAC sta per **Heteroscedasticity and Autocorrelation Consistent**. Prende il test t
+classico e lo "corregge" per tener conto dell'autocorrelazione e dell'eteroschedasticità.
 
-Analogia: il test t classico calcola l'errore standard come se ogni osservazione
-fosse indipendente. Se le osservazioni sono correlate (come in una serie settimanale),
-l'errore standard viene sottostimato — come se steste misurando l'altezza di mille
-persone ma in realtà steste misurando 20 famiglie per 50 volte (misurazioni ridondanti,
-non indipendenti). Il Newey-West allarga l'errore standard in modo proporzionale
-alla correlazione presente, usando una finestra di 4 lag (4 settimane = 1 mese).
-
-#### Perché è necessario
-
-Con DW = 0.29–0.42, i residui hanno autocorrelazione ρ ≈ 0.85–0.91. Questo significa
-che le 25–27 osservazioni post-shock non valgono 25 osservazioni indipendenti,
-ma l'equivalente di circa 5–7. Il test t tratta invece tutte come indipendenti,
-gonfiando la potenza del test di 3–5 volte. L'HAC corregge questo problema mantenendo
-un framework parametrico (più familiare e comparabile con la letteratura).
+Analogia: il test t classico calcola l'errore standard come se ogni osservazione fosse
+indipendente. Se le osservazioni sono correlate (come in una serie settimanale),
+l'errore standard viene sottostimato. Il Newey-West allarga l'errore standard in modo
+proporzionale alla correlazione presente, usando una finestra di 4 lag (≈ 1 mese).
 
 #### Risultati (split principale τ_price)
 
@@ -450,30 +395,47 @@ un framework parametrico (più familiare e comparabile con la letteratura).
 | Iran-Israele | Benzina | −0.019 EUR/L | 0.067 | n.s. |
 | Iran-Israele | Diesel | −0.027 EUR/L | 0.042 | ★ (negativo) |
 
-Il HAC Iran-Israele diesel con τ_margin: −0.028 EUR/L, p = 0.023 → il margine diesel
-è sceso dopo τ_margin, coerentemente con la classificazione "compressione margine".
+Il HAC con τ_margin per Ucraina: benzina p=0.039, diesel p=0.014 → segnale robusto
+ma endogeno, riportato come robustness check.
 
 ---
 
 ### Come si combinano i quattro test: il "consensus"
 
-L'analisi multi-split mostra, per ogni combinazione evento × carburante × split, quanti
-dei quattro test rigettano H₀. La notazione `[n/4 ✓]` indica consensus:
+L'analisi multi-split mostra, per ogni coppia evento × carburante × split, quanti
+dei test rigettano H₀:
 
-- `[4/4 ✓]` Tutti e quattro i test concordano → risultato molto robusto
-- `[3/4 ✓]` Tre su quattro concordano → risultato robusto
-- `[2/4 ✓]` Metà concordano → evidenza mista
-- `[1/4 –]` Solo uno concorda → risultato debole, cautela
-- `[0/4 –]` Nessuno rigetta → nessuna anomalia
+- `[4/4 ✓]` Tutti concordano → risultato molto robusto
+- `[3/4 ✓]` Tre su quattro → robusto
+- `[2/4 ✓]` Metà → evidenza mista
+- `[1/4 –]` Solo uno → risultato debole, cautela
+- `[0/4 –]` Nessuno → nessuna anomalia
 
-Esempio dalla pipeline — Ucraina benzina:
+Esempio — Ucraina benzina:
 
 | Split | Consensus |
 |---|---|
 | shock_hard | `[3/4 ✓]` |
-| τ_price | `[1/4 –]` (il consenso si abbassa per il motivo del gap 70gg) |
-| τ_margin | `[4/4 ✓]` |
-| pre_2019 | `[2/2 ✓]` (solo Welch e MW, no perm/HAC) |
+| τ_price (principale) | `[1/4 –]` (gap 70 giorni diluisce il segnale) |
+| τ_margin (robustness) | `[4/4 ✓]` |
+| pre_2019 (Welch+MW vs 2019) | `[2/2 ✓]` |
+
+---
+
+### La finestra pre-shock era già anomala? (δ_pre)
+
+Per ogni evento calcoliamo anche il δ_pre = media(pre-shock) − μ_2019. Se questo
+è già > 2σ, significa che il margine era elevato *prima* dello shock.
+
+Risultati significativi:
+- Iran-Israele benzina: δ_pre = +0.086 EUR/L → **pre anomalo**. Il margine era già
+  alto prima del conflitto. Il margine post è anzi *sceso* rispetto al pre:
+  δ_locale = −0.006 EUR/L.
+- Iran-Israele diesel: δ_pre = +0.081 EUR/L → **pre anomalo**. δ_locale = −0.021 EUR/L.
+
+Questo cambia radicalmente l'interpretazione: per Iran-Israele non c'è stata
+*espansione* del margine durante la crisi, ma il margine era già strutturalmente
+elevato nei mesi precedenti e lo shock lo ha anzi leggermente compresso.
 
 ---
 
@@ -482,61 +444,67 @@ Esempio dalla pipeline — Ucraina benzina:
 Ogni coppia evento × carburante riceve una classificazione basata sull'insieme dei test:
 
 - **Margine anomalo positivo:** il margine post-shock supera la soglia 2σ del 2019
-  e almeno un test primario (Welch o MW) rigetta H₀.
-- **Compressione margine:** il margine post-shock è inferiore al pre-shock (δ_locale < 0),
-  anche se il livello assoluto rimane sopra il 2019.
-- **Neutro / trasmissione attesa:** il margine post-shock non supera la soglia 2σ,
+  e almeno un test primario (Welch o MW) rigetta H₀, con δ_locale > 0.
+- **Compressione margine:** i test primari rigettano H₀ sul livello assoluto (sopra
+  2019), ma δ_locale < 0 — il margine era già elevato prima dello shock e lo shock
+  lo ha compresso rispetto al pre.
+- **Neutro / trasmissione attesa:** il margine post-shock non supera la soglia 2σ
   o tutti i test non rigettano H₀.
 - **Variazione statistica:** i test non concordano o il segnale è ambiguo.
 
+| Evento | Carburante | δ_locale | δ_vs_2019 | Classificazione |
+|---|---|---|---|---|
+| Ucraina | Benzina | +0.058 EUR/L | +0.089 EUR/L | **Margine anomalo positivo** |
+| Ucraina | Diesel | +0.047 EUR/L | +0.073 EUR/L | **Margine anomalo positivo** |
+| Iran-Israele | Benzina | −0.006 EUR/L | +0.079 EUR/L | **Compressione margine** |
+| Iran-Israele | Diesel | −0.021 EUR/L | +0.060 EUR/L | **Compressione margine** |
+| Hormuz (prel.) | Benzina | +0.008 EUR/L | +0.108 EUR/L | Margine anomalo positivo ⚠ |
+| Hormuz (prel.) | Diesel | −0.083 EUR/L | −0.010 EUR/L | Neutro / trasmissione attesa ⚠ |
+
 ---
 
-### La finestra pre-shock era già anomala? (δ_pre)
+### Il τ_margin e il suo lag rispetto a τ_price
 
-Per ogni evento calcoliamo anche il δ_pre = media(pre-shock) − μ_2019. Se questo
-è già > 2σ, significa che il margine era elevato *prima* dello shock — possibile
-anticipazione dei mercati o pressioni di costo preesistenti.
+Esiste non solo un changepoint del prezzo (τ_price, dalla Table 1) ma anche un
+changepoint del margine (τ_margin), stimato con lo stesso metodo bayesiano applicato
+al crack spread. Il confronto tra i due dice qualcosa di importante:
 
-Risultati significativi:
-- Iran-Israele benzina: δ_pre = +0.086 EUR/L → **pre anomalo** (il margine era già
-  alto prima del conflitto). Il margine post è in realtà *sceso* rispetto al pre:
-  δ_locale = −0.006 EUR/L.
-- Iran-Israele diesel: δ_pre = +0.081 EUR/L → **pre anomalo**. δ_locale = −0.021 EUR/L.
+- **REATTIVO** (τ_margin > τ_price): il margine si è rotto dopo il prezzo wholesale.
+  Coerente con trasmissione graduale dei costi (cost pass-through nel tempo).
+  → Ucraina: τ_lag = +70 giorni. Iran-Israele diesel: τ_lag = +28 giorni.
 
-Questo cambia radicalmente l'interpretazione: per Iran-Israele non c'è stata
-*espansione* del margine durante la crisi, ma piuttosto il margine era già strutturalmente
-elevato nei mesi precedenti, e lo shock lo ha anzi leggermente compresso.
+- **SINCRONO** (|τ_margin − τ_price| ≤ 1 settimana): i due changepoint coincidono.
+  Il margine si è espanso contestualmente al movimento di prezzo.
+  → Iran-Israele benzina: τ_lag = −7 giorni.
+
+- **ANTICIPATORIO** (τ_margin < τ_price): il margine si è rotto *prima* che il prezzo
+  wholesale salisse. Segnale di espansione preventiva del margine.
+  → Hormuz benzina: τ_lag = −98 giorni (⚠ dati preliminari).
 
 ---
 
 ### Il windfall: stima dell'extramargine cumulato
 
-Per ogni evento si calcola il **windfall** (extramargine): la somma settimanale di
-(margine_t − μ_2019) moltiplicata per i volumi di carburante venduti in Italia
-(proxy da dati MISE 2022). Dà un'idea dell'entità economica dell'anomalia.
+Per ogni evento si calcola il **windfall**: la somma settimanale di (margine_t − μ_2019)
+moltiplicata per i volumi proxy (dati MISE 2022). Dà un'idea dell'entità economica.
 
-| Evento | Carburante | Settimane sopra baseline | Windfall lordo (M€) |
+| Evento | Carburante | Settimane sopra baseline | Windfall netto M€ |
 |---|---|---|---|
-| Ucraina | Benzina | 42/52 | ≈ 649 M€ |
-| Ucraina | Diesel | 40/52 | ≈ 1.917 M€ |
-| Iran-Israele | Benzina | 43/43 | ≈ 648 M€ |
-| Iran-Israele | Diesel | 42/43 | ≈ 1.852 M€ |
+| Ucraina | Benzina | 42/52 | ≈ +578 M€ |
+| Ucraina | Diesel | 40/52 | ≈ +1.549 M€ |
+| Iran-Israele | Benzina | 43/43 | ≈ +648 M€ |
+| Iran-Israele | Diesel | 42/43 | ≈ +1.835 M€ |
 
-**Nota importante:** questi sono extramargini *lordi* calcolati su proxy di volumi e
-crack spread. Non sono profitti netti — dal margine lordo vanno sottratti costi
-operativi, logistica, struttura della rete distributiva. Sono una stima dell'ordine
-di grandezza del fenomeno, non del guadagno effettivo.
+**Nota:** questi sono extramargini *lordi* calcolati su proxy di volumi e crack spread.
+Non sono profitti netti — dal margine lordo vanno sottratti costi operativi, logistica,
+struttura della rete distributiva.
 
 ---
 
 ## PASSO 4 — Evidenza ausiliaria (`04_auxiliary_evidence.py`)
 
-### Tre domande aggiuntive
-
 Il passo 3 ha stabilito se il margine è anomalo rispetto al 2019. Il passo 4 aggiunge
-tre domande di contesto: quanto velocemente si trasmettono i prezzi (Granger),
-se la trasmissione è strutturalmente asimmetrica (Rockets & Feathers), e se
-l'anomalia è specifica all'Italia o comune a tutta l'EU (DiD).
+tre domande di contesto.
 
 ---
 
@@ -548,25 +516,17 @@ Il test di Granger risponde a: **sapere il prezzo del Brent di questa settimana 
 a prevedere il prezzo alla pompa della prossima settimana?** Se sì, diciamo che il
 Brent "Granger-causa" il prezzo alla pompa.
 
-Non è causalità nel senso filosofico — è predittività temporale. Se il Brent di
-oggi mi aiuta a prevedere la pompa di domani, e non viceversa, significa che le
-informazioni fluiscono in quella direzione.
-
-#### Perché è utile qui
-
-Se il Brent predice la pompa con 1–4 settimane di lag, la trasmissione è veloce.
-Un lag breve è ambiguo: potrebbe indicare efficienza del mercato (i prezzi si aggiornano
-rapidamente ai costi), ma anche pricing opportunistico (i prezzi salgono immediatamente
-quando il wholesale sale). Non ci permette di distinguere le due ipotesi da solo.
+Non è causalità nel senso filosofico — è predittività temporale.
 
 #### Risultati
 
 Il test è significativo (p < 0.0001) per tutti i lag da 1 a 8 settimane, sia per
 benzina che diesel. F-statistic massima: F=74 per benzina lag-1, F=83 per diesel lag-1.
+Il 2020 è escluso (COVID — shock strutturale non rappresentativo).
 
-Questo conferma che il Brent predice fortemente i prezzi alla pompa anche a distanza
-di 4 settimane. È coerente sia con mercati efficienti che con pricing anticipatorio.
-Per questo il Granger non è classificato come test confirmatory ma esplorativo.
+Questo conferma trasmissione rapida del Brent ai prezzi pompa. È però coerente
+sia con mercati efficienti che con pricing opportunistico: il Granger rimane test
+esplorativo, non confirmatory.
 
 ---
 
@@ -574,34 +534,20 @@ Per questo il Granger non è classificato come test confirmatory ma esplorativo.
 
 #### Cos'è in parole semplici
 
-L'effetto "razzi e piume" (Rockets & Feathers) descrive un fenomeno osservato in
-molti mercati dei carburanti: **i prezzi alla pompa salgono velocemente quando il
-prezzo del Brent sale (razzi), ma scendono lentamente quando il Brent scende (piume)**.
-
-Se questo è vero strutturalmente, i distributori guadagnano di più nei periodi di
-discesa rispetto a un mercato perfettamente simmetrico — anche senza fare nulla di
-speciale durante le crisi.
-
-#### Come si misura
-
-Si stima un modello OLS separando i movimenti del Brent in rialzi (Δ_up) e ribassi
-(Δ_down) e stimando un coefficiente β per ciascuno. Se β_up > β_down, i prezzi
-trasmettono i rialzi più velocemente dei ribassi.
-
-Gli errori standard vengono corretti con il metodo Newey-West (stesso HAC del test 4)
-perché, come visto, le serie hanno autocorrelazione forte.
+L'effetto "razzi e piume" descrive un fenomeno osservato in molti mercati dei
+carburanti: **i prezzi alla pompa salgono velocemente quando il Brent sale (razzi),
+ma scendono lentamente quando il Brent scende (piume)**.
 
 #### Risultati
 
-| Carburante | β_up | β_down | R&F index (β_up/β_down) | p asimmetria |
+| Carburante | β_up | β_down | R&F index | p asimmetria |
 |---|---|---|---|---|
 | Benzina | 0.167 | 0.211 | 0.794 | 0.745 n.s. |
 | Diesel | 0.240 | 0.183 | 1.314 | 0.757 n.s. |
 
-Il p-value dell'asimmetria è molto alto (non significativo) per entrambi. Questo
-significa che i dati non supportano un'asimmetria strutturale statisticamente
-distinguibile dal rumore. Il segnale di anomalia del margine non è spiegabile con
-un effetto "razzi e piume" preesistente.
+Il p-value è molto alto (non significativo) per entrambi. I dati non supportano
+un'asimmetria strutturale statisticamente distinguibile dal rumore. Il segnale di
+anomalia del margine non è spiegabile con un "razzi e piume" preesistente.
 
 ---
 
@@ -609,43 +555,32 @@ un effetto "razzi e piume" preesistente.
 
 #### Cos'è in parole semplici
 
-Il DiD è un metodo per rispondere a: **l'anomalia del margine italiano è specifica
-all'Italia, oppure si è verificata allo stesso modo anche in altri paesi EU?**
-
-Funziona così: confrontiamo la variazione del margine italiano con la variazione
-del margine di un paese di controllo (Germania e Svezia) durante lo stesso evento.
-Se l'Italia ha avuto un salto *aggiuntivo* rispetto alla Germania, quel salto
-differenziale non può essere spiegato da un fenomeno comune europeo (es. tutti
-i mercati hanno reagito allo stesso modo allo stesso shock).
+Il DiD risponde a: **l'anomalia del margine italiano è specifica all'Italia, oppure
+si è verificata allo stesso modo anche in altri paesi EU?**
 
 Formula:
 ```
 δ_DiD = (margine_IT_post − margine_IT_pre) − (margine_DE_post − margine_DE_pre)
 ```
 
+Paesi di controllo: **Germania** e **Svezia** (dati dallo stesso EU Oil Bulletin).
+
 #### Il Parallel Trends Assumption (PTA): la condizione di validità
 
 Il DiD funziona solo se, in assenza dello shock, Italia e paese di confronto avrebbero
-seguito la stessa traiettoria. Questa ipotesi si chiama **Parallel Trends Assumption
-(PTA)**.
-
-Come la testiamo? Guardiamo le 8 settimane precedenti allo shock: se le variazioni
-settimanali di Italia e paese di controllo erano già divergenti prima dello shock,
-il DiD non è interpretabile causalmente.
-
-Il PTA viene testato con una regressione: se il suo p-value è > 0.05, le tendenze
-erano parallele e il DiD è valido.
+seguito la stessa traiettoria. Questa ipotesi — Parallel Trends Assumption (PTA) —
+viene testata sulle **8 settimane precedenti** allo shock. Se PTA è violata, il DiD
+non è interpretabile causalmente.
 
 #### Risultati
 
-Tutti i test DiD non risultano significativi (tutti p > 0.05). Questo non significa
-che non ci sia anomalia — significa che l'Italia non si è comportata diversamente
-da Germania e Svezia durante gli stessi eventi.
+Tutti i test DiD non risultano significativi (tutti p > 0.05 con PTA non violata).
+Questo non significa che non ci sia anomalia: significa che l'Italia non si è
+comportata diversamente da Germania e Svezia durante gli stessi eventi.
 
-Interpretazione: l'anomalia del margine è un fenomeno *europeo*, non specificamente
+**Interpretazione:** l'anomalia del margine è un fenomeno *europeo*, non specificamente
 italiano. Tutti i mercati EU hanno visto margini elevati, probabilmente perché tutti
-usano gli stessi futures wholesale come riferimento di costo e tutti hanno reagito
-agli stessi shock di mercato.
+usano gli stessi futures wholesale come riferimento di costo.
 
 ---
 
@@ -653,30 +588,23 @@ agli stessi shock di mercato.
 
 ### Il problema dei test multipli: l'esempio dei dadi
 
-Immaginate di tirare un dado a sei facce 20 volte e scommettere ogni volta che esce 6.
-Naturalmente, in media esce 6 circa 3 volte su 20 — per pura casualità. Se dopo 20
-tiri avete vinto 3 volte e concludete "il dado è truccato", state sbagliando: è
-esattamente quello che ci aspettavamo per caso.
+Immaginate di tirare un dado a sei facce 20 volte. Naturalmente, in media esce 6 circa
+3 volte su 20 — per pura casualità. Se dopo 20 tiri avete vinto 3 volte e concludete
+"il dado è truccato", state sbagliando: è esattamente quello che ci aspettavamo per caso.
 
-Lo stesso problema esiste quando eseguiamo molti test statistici: se usiamo soglia
-p < 0.05 per ciascuno, su 24 test indipendenti ci aspettiamo circa 1.2 rigetti falsi
-*per pura casualità*. Dobbiamo correggere.
+Lo stesso problema esiste quando eseguiamo molti test statistici: su 24 test indipendenti
+con soglia p < 0.05, ci aspettiamo circa 1.2 rigetti falsi per pura casualità.
 
 ### Cos'è la correzione Benjamini-Hochberg (BH)
 
-La correzione **Benjamini-Hochberg (1995)** è un metodo che controlla il **False
-Discovery Rate (FDR)**: la proporzione attesa di rigetti falsi tra tutti i rigetti.
-A differenza della più conservativa correzione di Bonferroni (che controlla la
-probabilità di *anche un solo* falso positivo), la BH permette di trovare più risultati
-veri mantenendo il FDR ≤ 5%.
+La correzione **Benjamini-Hochberg (1995)** controlla il **False Discovery Rate (FDR)**:
+la proporzione attesa di rigetti falsi tra tutti i rigetti. A differenza della correzione
+di Bonferroni, la BH è meno conservativa e permette di trovare più risultati veri.
 
 Come funziona:
 1. Ordina tutti i p-value dal più piccolo al più grande.
 2. Assegna a ciascuno un rango k (da 1 a n).
 3. Rifiuta H₀ per tutti i test con p ≤ (k/n) × α.
-
-Questo crea una soglia adattiva: i test con p-value bassissimi vengono confrontati
-con una soglia più permissiva, quelli con p-value alti con una soglia più severa.
 
 ### Quale famiglia di test entra nella BH
 
@@ -686,10 +614,10 @@ a domande diverse e non devono essere mescolati.
 
 | Categoria | Script | N test | Entra nella BH? |
 |---|---|---|---|
-| Welch t (primario) | 03 | 4 | ✓ Sì |
-| Mann-Whitney (vs 2019) | 03 | 4 | ✓ Sì |
-| Block permutation (split τ_price) | 03 | 4 | ✓ Sì |
-| HAC Newey-West (split τ_price) | 03 | 4 | ✓ Sì |
+| Welch t (vs μ_2019, primario) | 03 | 4 | ✓ Sì |
+| Mann-Whitney (post vs 2019) | 03 | 4 | ✓ Sì |
+| Block permutation (split τ_price, principale) | 03 | 4 | ✓ Sì |
+| HAC Newey-West (split τ_price, principale) | 03 | 4 | ✓ Sì |
 | DiD IT vs DE e SE | 04 | 8 | ✓ Sì |
 | Block perm (split τ_margin, robustness) | 03 | 4 | ✗ No (check) |
 | HAC (split τ_margin, robustness) | 03 | 4 | ✗ No (check) |
@@ -699,7 +627,7 @@ a domande diverse e non devono essere mescolati.
 
 ### Risultati finali
 
-Dalla famiglia di 24 test, la BH globale rigetta H₀ per 8 test:
+Dalla famiglia di 24 test, la BH globale rigetta H₀ per **8 test**:
 
 | Test | Evento | Carburante | p nominale | p aggiustato |
 |---|---|---|---|---|
@@ -712,7 +640,7 @@ Dalla famiglia di 24 test, la BH globale rigetta H₀ per 8 test:
 | Mann-Whitney | Ucraina | Benzina | 0.0001 | 0.0003 |
 | Welch t | Ucraina | Diesel | 0.0008 | 0.0024 |
 
-**Sommario per famiglia di test:**
+**Sommario per famiglia:**
 - Welch t: 4/4 rigettati (FDR 5%)
 - Mann-Whitney: 4/4 rigettati (FDR 5%)
 - Block permutation (principale): 0/4 rigettati
@@ -721,51 +649,97 @@ Dalla famiglia di 24 test, la BH globale rigetta H₀ per 8 test:
 
 ### Come interpretare questo quadro
 
-**I test di livello assoluto (Welch, MW vs 2019) rigettano tutti.** Questo dice che il
-margine nel periodo post-shock è sistematicamente più alto del 2019, in tutti e 4 i
-casi non preliminari, con certezza statistica molto alta anche dopo correzione BH.
+**I test di livello assoluto (Welch, MW vs 2019) rigettano tutti.** Il margine nel
+periodo post-shock è sistematicamente più alto del 2019, in tutti e 4 i casi non
+preliminari, con certezza statistica molto alta.
 
-**I test di salto locale (perm, HAC con split τ_price) non rigettano.** Questo non
-contraddice il risultato precedente: misura una domanda *diversa*. Il permutation test
-con split τ_price chiede: "il margine ha fatto un salto brusco nel periodo immediatamente
-successivo al changepoint del prezzo?" La risposta è: no per Ucraina (il margine si è
-alzato gradualmente nei 70 giorni successivi a τ_price), e no per Iran-Israele (il
-margine era già alto prima dello shock e non è ulteriormente salito dopo).
+**I test di salto locale (perm, HAC con split τ_price) non rigettano.** Non contraddice
+il risultato precedente: misura una domanda *diversa*. Con split τ_price, il perm chiede:
+"il margine ha fatto un salto brusco nel periodo immediatamente successivo al changepoint
+del prezzo?" Per Ucraina: no, il margine si è alzato gradualmente nei 70 giorni dopo
+τ_price. Per Iran-Israele: no, il margine era già alto e anzi è sceso.
 
-**I test di robustness (split τ_margin) concordano con perm/HAC per Iran-Israele,
-ma danno segnale per Ucraina.** Questo conferma che per Ucraina c'è un salto reale del
-margine, ma avviene con un ritardo di 70 giorni rispetto al segnale di prezzo —
-il che è coerente con trasmissione graduale dei costi piuttosto che con un salto
-istantaneo speculativo.
+**I test di robustness (split τ_margin) danno segnale per Ucraina.** Con τ_margin
+come split, il salto reale del margine emerge nettamente. Questo conferma che per
+Ucraina c'è stata una rottura reale del margine — avvenuta circa 70 giorni dopo
+il segnale di prezzo, coerente con trasmissione graduale dei costi.
 
-**Il DiD non rigetta.** L'anomalia non è specifica all'Italia: tutti i mercati EU
-hanno seguito la stessa dinamica.
+**Il DiD non rigetta.** L'anomalia non è specifica all'Italia.
+
+---
+
+## PASSO 6 — Verifica dell'assunzione distributiva (`06_distribution_check.py`)
+
+### Cosa fa
+
+Il modello bayesiano del passo 2 assume che i residui della regressione piecewise
+seguano una distribuzione **StudentT** (con gradi di libertà stimati dai dati). Ma
+questa era davvero la distribuzione migliore? Il passo 6 lo verifica confrontando
+quattro famiglie distributive:
+
+- **Normale**: la più semplice, assenza di code pesanti.
+- **StudentT**: code pesanti simmetriche (scelta attuale del modello).
+- **Skew-Normal**: asimmetria senza code pesanti.
+- **Skewed-T (Fernandez-Steel)**: asimmetria *e* code pesanti — la più flessibile.
+
+Il confronto avviene tramite **criterio AIC** (Akaike Information Criterion):
+un modello con AIC più basso spiega meglio i dati, tenendo conto della complessità.
+
+### Risultati
+
+| Scenario | Distribuzione raccomandata |
+|---|---|
+| Ucraina Benzina (log-prezzi) | Skewed-T |
+| Ucraina Diesel (log-prezzi) | Skewed-T |
+| Ucraina Brent (log-prezzi) | StudentT (ok) |
+| Iran-Israele Brent, Benzina | StudentT (ok) |
+| Iran-Israele Diesel | Normale |
+| Hormuz Brent, Benzina | Skewed-T |
+| Hormuz Diesel | Normale |
+| Ucraina Benzina/Diesel (crack spread) | Skewed-T |
+| Iran-Israele Benzina (crack spread) | Normale |
+| Iran-Israele Diesel (crack spread) | Skewed-T |
+
+### Cosa significa in pratica
+
+**Per la maggioranza degli scenari la Skewed-T è raccomandata.** Questo dice che i
+residui dei log-prezzi non sono solo con code pesanti (StudentT) ma anche asimmetrici:
+i movimenti di prezzo verso l'alto sono più frequenti o più estremi di quelli verso
+il basso (o viceversa).
+
+**Questo non invalida i risultati attuali.** I test di script 03 (Welch, MW, perm, HAC)
+non assumono una distribuzione specifica dei residui — sono robusti a questa scelta.
+L'unico impatto è sulla *stima precisa di τ* e sul *credible interval* del changepoint.
+Se la Skewed-T fosse usata nel modello, τ potrebbe spostarsi di qualche settimana,
+ma i risultati qualitativi resterebbero stabili.
+
+La guida operativa per modificare il modello PyMC è inclusa nell'output del script.
 
 ---
 
 ## Analisi annuale: "alla fine dell'anno si sono guadagnati uguale?"
 
 Oltre all'analisi per evento, la pipeline calcola per ogni anno dal 2019 al 2026
-il margine medio e il windfall netto rispetto al 2019. Risponde a una domanda
-diversa: anche se il margine è stato volatile, *nell'intero anno* quanto si è
-guadagnato in più?
+il margine medio e il windfall netto rispetto al 2019.
 
-Benzina (extramargine annuo rispetto al 2019, in milioni di euro):
+**Benzina** (extramargine annuo rispetto al 2019, in milioni di euro):
 
 | Anno | Anomalo (2σ)? | MW vs 2019 | Windfall netto M€ |
 |---|---|---|---|
 | 2019 | no | — | −0 |
 | 2020 | no | p=0.0001 | +340 |
 | 2021 | no | p=0.0076 | +126 |
-| 2022 | **Sì** | p=0.0000 | +807 |
+| 2022 | **Sì** | p=0.0000 | **+807** |
 | 2023 | **Sì** | p=0.0000 | +633 |
 | 2024 | **Sì** | p=0.0000 | +622 |
-| 2025 | **Sì** | p=0.0000 | +818 |
+| 2025 | **Sì** | p=0.0000 | **+818** |
 | 2026 (parz.) | **Sì** | p=0.0000 | +288 |
 
-I margini sono rimasti strutturalmente sopra il 2019 per tutti gli anni dal 2022 in poi,
-anche pesando i periodi di compressione. Non si tratta di spike temporanei ma di un
-livello più alto stabilizzato.
+**Diesel** — lo stesso pattern si ripete, con windfall ancora maggiori per via dei
+volumi più alti (2022: +2.297 M€, 2025: +2.362 M€).
+
+I margini sono rimasti strutturalmente sopra il 2019 per tutti gli anni dal 2022 in
+poi. Non si tratta di spike temporanei ma di un livello più alto stabilizzato.
 
 ---
 
@@ -775,39 +749,40 @@ livello più alto stabilizzato.
 
 Il "margine" calcolato è la differenza tra prezzo alla pompa e futures wholesale
 Amsterdam-Rotterdam-Anversa. I distributori italiani comprano realmente su mercati
-CIF-Genova o con contratti bilaterali a prezzi diversi. Se il differenziale ARA-Genova
-è cambiato sistematicamente durante le crisi, una parte del "margine anomalo" potrebbe
-riflettere questo, non un guadagno aggiuntivo del distributore.
+CIF-Genova o con contratti bilaterali a prezzi diversi. Se il differenziale
+ARA-Genova è cambiato sistematicamente durante le crisi, una parte del "margine
+anomalo" potrebbe riflettere questo.
 
 ### 2. Causalità vs correlazione
 
 I test statistici descrivono pattern, non cause. "Margine anomalo positivo" è coerente
 con diversi meccanismi: comportamento opportunistico, effetti FIFO/LIFO sull'inventario
-(se hai comprato il carburante quando costava meno e lo vendi al prezzo di oggi),
-risk premium razionale (i distributori possono voler coprire il rischio di future
-perdite in un ambiente volatile), costi operativi aumentati per ragioni indipendenti.
-Separare queste cause richiederebbe dati di inventario e costi interni non pubblici.
+(hai comprato il carburante quando costava meno e lo vendi al prezzo di oggi),
+risk premium razionale, costi operativi aumentati. Separare queste cause richiederebbe
+dati di inventario e costi interni non pubblici.
 
 ### 3. La baseline 2019 è una scelta
 
-Abbiamo usato il 2019 come anno "normale". Se usassimo il 2021 come baseline
-(anno più vicino alla crisi, ma già parzialmente influenzato dalla ripresa post-COVID),
-la soglia 2σ sarebbe più alta (0.048 vs 0.038 EUR/L per la benzina) e meno casi
-risulterebbero anomali. L'analisi di sensitivity è inclusa nella pipeline
-(data/baseline_sensitivity.csv) e riporta entrambi i valori.
+Se usassimo il 2021 come baseline (più vicino alla crisi, ma già influenzato dalla
+ripresa post-COVID), la soglia 2σ sarebbe più alta (0.048 vs 0.038 EUR/L per la benzina)
+e meno casi risulterebbero anomali. L'analisi di sensitivity è inclusa
+(data/baseline_sensitivity.csv).
 
 ### 4. Hormuz è preliminare
 
 Al momento dell'analisi, solo 7 settimane di dati post-shock Hormuz erano disponibili.
-I risultati per quel evento vanno trattati come direzioni indicative, non come
-conclusioni robuste.
+I risultati per quell'evento vanno trattati come direzioni indicative.
 
 ### 5. Il DiD presuppone paesi comparabili
 
 Germania e Svezia non sono sostituti perfetti dell'Italia come gruppo di controllo.
-Hanno strutture distributive diverse, mix energetico diverso, regolamentazione diversa.
-Il DiD non rigettare non garantisce che i mercati siano identici — solo che la
-*variazione* del margine durante gli eventi è stata simile.
+Strutture distributive, mix energetico e regolamentazione differiscono.
+
+### 6. La Skewed-T non è ancora implementata nel modello bayesiano
+
+Il check distributivo del passo 6 suggerisce che una distribuzione asimmetrica
+sarebbe più corretta per diversi scenari. La modifica al modello PyMC è documentata
+nel codice, ma non ancora implementata nel run principale.
 
 ---
 
@@ -823,8 +798,11 @@ Il DiD non rigettare non garantisce che i mercati siano identici — solo che la
 | **Autocorrelazione** | Tendenza di una serie a essere simile a sé stessa la settimana precedente |
 | **Eteroschedasticità** | Varianza dei dati che cambia nel tempo |
 | **Changepoint (τ)** | Data in cui la traiettoria di una serie ha cambiato direzione strutturalmente |
+| **τ_price** | Changepoint stimato sui log-prezzi wholesale (esogeno al margine) |
+| **τ_margin** | Changepoint stimato sul crack spread (endogeno, usato come robustness) |
+| **τ_lag** | Distanza tra τ_margin e τ_price (ANTICIPATORIO / SINCRONO / REATTIVO) |
 | **MCMC** | Metodo di simulazione per stimare distribuzioni di probabilità |
-| **Rhat** | Indicatore di convergenza delle simulazioni MCMC (buono se vicino a 1.00) |
+| **Rhat** | Indicatore di convergenza MCMC (buono se ≤ 1.01) |
 | **Test parametrico** | Test che assume una forma specifica della distribuzione (es. normale) |
 | **Test non parametrico** | Test che non fa assunzioni sulla distribuzione (es. Mann-Whitney) |
 | **Benjamini-Hochberg (BH)** | Correzione statistica per quando si fanno molti test insieme |
@@ -834,10 +812,12 @@ Il DiD non rigettare non garantisce che i mercati siano identici — solo che la
 | **Granger** | Test che verifica se una serie predice un'altra nel tempo |
 | **HAC** | Correzione degli errori standard per autocorrelazione e eteroschedasticità |
 | **Block permutation** | Test di simulazione che preserva la struttura temporale locale |
-| **τ_price** | Data del changepoint stimato sui prezzi wholesale |
-| **τ_margin** | Data del changepoint stimato sul crack spread (margine) |
 | **Cliff's delta** | Effect size ordinale: quanto sono spostati i valori di un gruppo rispetto all'altro |
-| **Hodges-Lehmann** | Stima robusta della differenza tipica tra due gruppi (alternativa alla media) |
+| **Hodges-Lehmann (HL)** | Stima robusta della differenza tipica tra due gruppi |
 | **Windfall** | Extramargine cumulato sopra la baseline, moltiplicato per i volumi venduti |
+| **AIC** | Criterio di informazione di Akaike: misura qualità del modello, penalizzando complessità |
+| **Skewed-T** | Distribuzione con code pesanti *e* asimmetria (Fernandez-Steel) |
+| **δ_locale** | Differenza post − pre all'interno della stessa finestra evento |
+| **δ_vs_2019** | Differenza post-shock vs media del baseline 2019 |
 
 ---

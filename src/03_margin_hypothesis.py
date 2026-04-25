@@ -31,6 +31,16 @@ testiamo anche la finestra pre-shock vs baseline 2019:
   Se TRUE, il margine era già elevato prima dello shock → coerente con
   anticipazione di mercato, non con speculazione post-evento.
 
+  Viene aggiunto anche un confronto locale pre-τ vs post-τ usando
+  il changepoint MCMC (τ_price) come split:
+  - MW_tau_price_local: MW(pre_lc, post_lc) con split su τ_price
+  - δ_pre_tau_vs_2019 e δ_post_tau_vs_2019: le due finestre rispetto
+    alla 2σ baseline 2019.
+  Questo risponde a: "il margine post-τ domina il pre-τ?" E, separatamente,
+  "era già la pre-τ fuori dalla 2σ 2019?" — se sì, il delta locale
+  locale piccolo non è una contradizione: entrambe le finestre erano già
+  elevate rispetto al 2019 (mercato strutturalmente modificato prima dello shock).
+
 CHANGEPOINT SUL MARGINE
 ------------------------
 Per ogni evento × carburante calcoliamo anche τ_margin = data in cui il
@@ -609,6 +619,18 @@ for ev_name, cfg in EVENTS.items():
         # Versione locale shock_hard (mantenuta per confronto nel CSV)
         mw_local = mann_whitney_full(pre_m, post_m)
 
+        # ── MW con split τ_price (MCMC) — confronto locale pre vs post τ ───
+        # Risponde a: la distribuzione post-τ stochasticamente domina la pre-τ?
+        # Separato da mw_local (shock_hard) perché τ_price è la stima MCMC
+        # del vero break strutturale sui prezzi — window pre-τ più "pulita".
+        # Calcoliamo anche δ di entrambe le finestre vs baseline 2019 per capire
+        # se la pre-τ era già fuori dalla 2σ prima ancora dello shock.
+        mw_tau_price_local = mann_whitney_full(pre_lc, post_lc)
+        delta_pre_lc_vs_bl  = float(pre_lc.mean()  - mu_2019) if len(pre_lc)  > 0 else np.nan
+        delta_post_lc_vs_bl = float(post_lc.mean() - mu_2019) if len(post_lc) > 0 else np.nan
+        pre_lc_anomalo  = delta_pre_lc_vs_bl  > soglia if not np.isnan(delta_pre_lc_vs_bl)  else False
+        post_lc_anomalo = delta_post_lc_vs_bl > soglia if not np.isnan(delta_post_lc_vs_bl) else False
+
         # ── 3. Block permutation ──────────────────────────────────────────
         # [3a] Principale: split τ_price (entra nella BH correction)
         obs_perm, p_perm = perm_test(pre_lc, post_lc, rng=rng_perm)
@@ -660,6 +682,15 @@ for ev_name, cfg in EVENTS.items():
               f"[{mw['magnitude']}]")
         print(f"    MW_local (post vs pre shock_hard, per confronto): "
               f"p(one)={mw_local['p_one']:.4f} {_stars(mw_local['p_one'])}")
+        # MW con split MCMC τ_price: confronto locale pre-τ vs post-τ
+        # + contestualizzazione di entrambe le finestre rispetto alla 2σ 2019
+        _pre_lc_flag  = f"FUORI 2σ ({'+'}{delta_pre_lc_vs_bl:.5f})"  if pre_lc_anomalo  else f"entro 2σ ({delta_pre_lc_vs_bl:+.5f})"
+        _post_lc_flag = f"FUORI 2σ ({'+'}{delta_post_lc_vs_bl:.5f})" if post_lc_anomalo else f"entro 2σ ({delta_post_lc_vs_bl:+.5f})"
+        print(f"    MW_tau_price [pre-τ vs post-τ, split={split_lc_lbl}]: "
+              f"p(one)={mw_tau_price_local['p_one']:.4f} {_stars(mw_tau_price_local['p_one'])}  "
+              f"HL={mw_tau_price_local['hodges_lehmann']:+.5f}  Cliff={mw_tau_price_local['cliffs_delta']:+.3f}")
+        print(f"      → pre-τ  vs 2019: {_pre_lc_flag}  (n={len(pre_lc)})")
+        print(f"      → post-τ vs 2019: {_post_lc_flag}  (n={len(post_lc)})")
         print(f"    Block perm [PRINCIPALE — split={split_lc_lbl}]: "
               f"delta_med={obs_perm:+.5f}  p={p_perm:.4f} {_stars(p_perm)}")
         p_perm_tm_str = f"{p_perm_tm:.4f} {_stars(p_perm_tm)}" if not np.isnan(p_perm_tm) else "N/A"
@@ -732,6 +763,19 @@ for ev_name, cfg in EVENTS.items():
             # ── MW_local: vs shock_hard pre (confronto) ──────────────────
             "mw_local_p_one":          mw_local["p_one"],
             "mw_local_cliff":          mw_local["cliffs_delta"],
+            # ── MW_tau_price_local: pre-τ vs post-τ (split MCMC) ─────────
+            # Risponde a: il margine post-τ domina stochasticamente il pre-τ?
+            # Le colonne _vs_bl mostrano se ciascuna finestra era già fuori
+            # dalla 2σ 2019: se pre_tau_anomalo=True, la pre-window era già
+            # "contaminata" prima dello shock (market anticipation o trend).
+            "mw_tau_split_label":      split_lc_lbl,
+            "mw_tau_p_one":            mw_tau_price_local["p_one"],
+            "mw_tau_cliff":            mw_tau_price_local["cliffs_delta"],
+            "mw_tau_hl":               mw_tau_price_local["hodges_lehmann"],
+            "delta_pre_tau_vs_2019":   round(delta_pre_lc_vs_bl, 5)  if not np.isnan(delta_pre_lc_vs_bl)  else np.nan,
+            "delta_post_tau_vs_2019":  round(delta_post_lc_vs_bl, 5) if not np.isnan(delta_post_lc_vs_bl) else np.nan,
+            "pre_tau_anomalo_2sigma":  pre_lc_anomalo,
+            "post_tau_anomalo_2sigma": post_lc_anomalo,
             # ── Perm/HAC [PRINCIPALE]: split τ_price — entra nella BH ──────
             "split_main_type":         split_lc_lbl,
             "n_pre_main":              len(pre_lc),
