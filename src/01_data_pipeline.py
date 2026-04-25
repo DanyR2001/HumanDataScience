@@ -1,5 +1,5 @@
 """
-01_data_pipeline.py
+01_data_pipeline.py  (fix: normalizzazione unità EUR/1000L → EUR/L)
 ====================
 Raccolta e preparazione dati.
 
@@ -8,14 +8,9 @@ Produciamo tre serie settimanali (W-MON, dal 2019):
   - Prezzi pompa Italia senza tasse (EU Weekly Oil Bulletin, foglio "wo taxes")
   - Futures wholesale europei    (Eurobob ARA benzina, Gas Oil ICE diesel)
 
-Il 2019 è il baseline pre-crisi: nessuno shock energetico, mercato maturo,
-Brent stabile 60-70 $/bbl. Il 2020 (COVID, WTI negativo) e il 2021
-(rimbalzo) non sono usati come baseline ma restano nel dataset per le
-stime di trasmissione.
-
-I prezzi pompa sono al netto di IVA e accise italiane. Il margine lordo
-calcolato in script 03 è quindi il ricavo del canale distributivo meno
-il costo wholesale europeo — non il margine al consumatore finale.
+NOTA UNITÀ: l'EU Oil Bulletin pubblica i prezzi in EUR/1000L.
+I futures Eurobob/GasOil sono convertiti in EUR/L.
+Per coerenza, normalizziamo i prezzi pompa in EUR/L (/1000) se mediana > 10.
 
 Output:
   data/brent_weekly_eur.csv
@@ -120,14 +115,6 @@ except Exception as exc:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Prezzi pompa Italia senza tasse (EU Weekly Oil Bulletin)
-#
-# L'EU Bulletin pubblica prezzi al netto di IVA e accise per tutti gli
-# Stati membri: è la fonte ufficiale per comparazioni cross-country.
-# Il file storico (2005-oggi) è preferito perché copre il baseline 2019.
-#
-# Usiamo openpyxl read_only=True per evitare il bug del file EU Bulletin:
-# le data-validation con formula1 numerica nel XML causano TypeError
-# con pd.read_excel in alcune versioni di openpyxl.
 # ─────────────────────────────────────────────────────────────────────────────
 print("\nScarico prezzi pompa (EU Weekly Oil Bulletin)...")
 
@@ -243,12 +230,24 @@ if not used_pretax:
     missing_log["nota_tasse"] = "File senza tasse non scaricabile — usati prezzi lordi."
     print("  NOTA: prezzi includono tasse (fallback).")
 
+# ── NORMALIZZAZIONE UNITÀ EUR/1000L → EUR/L ──────────────────────────────
+# L'EU Bulletin pubblica in EUR/1000L (valori tipici 400-700).
+# I futures Eurobob/GasOil sono in EUR/L (valori tipici 0.35-0.75).
+# Per coerenza nel calcolo del margine crack spread, normalizziamo.
+for col in ["benzina_eur_l", "diesel_eur_l"]:
+    med_val = pompa[col].dropna().median()
+    if med_val > 10:
+        pompa[col] = pompa[col] / 1000.0
+        print(f"  Normalizzato {col}: /1000 (mediana era {med_val:.1f} EUR/1000L -> "
+              f"{med_val/1000:.4f} EUR/L)")
+
 pompa["benzina_4w"]  = pompa["benzina_eur_l"]
 pompa["diesel_4w"]   = pompa["diesel_eur_l"]
 pompa["log_benzina"] = np.log(pompa["benzina_eur_l"])
 pompa["log_diesel"]  = np.log(pompa["diesel_eur_l"])
 pompa.to_csv("data/prezzi_pompa_italia.csv")
 print(f"  Pompa: {pompa.index[0].date()} – {pompa.index[-1].date()}")
+print(f"  Check benzina 2019 media: {pompa.loc['2019','benzina_eur_l'].mean():.4f} EUR/L")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -266,10 +265,6 @@ print(f"\nDataset unificato: {len(merged)} settimane | "
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Futures wholesale europei (CSV Investing.com pre-scaricati)
-#
-# Eurobob Gasoline (ARA Rotterdam) = costo wholesale benzina per distributori EU
-# Gas Oil ICE London               = costo wholesale diesel  per distributori EU
-# Entrambi in USD/tonnellata → convertiamo in EUR/litro tramite densità standard.
 # ─────────────────────────────────────────────────────────────────────────────
 print("\nCarico futures wholesale (CSV)...")
 
@@ -301,7 +296,8 @@ for path, raw_col, eur_l_col, l_per_t in [
         merged_f = merged_f.join(wk.rename(raw_col), how="left")
         merged_f[eur_l_col] = (merged_f[raw_col] / eurusd_al) / l_per_t
         futures_ok[raw_col] = True
-        print(f"  {raw_col}: {len(df_f)} righe")
+        print(f"  {raw_col}: {len(df_f)} righe | "
+              f"mediana {merged_f[eur_l_col].median():.4f} EUR/L")
     except Exception as exc:
         futures_ok[raw_col] = False
         print(f"  {raw_col}: {exc}")
@@ -347,20 +343,20 @@ def _war_lines(ax, y_top):
             ax.text(ts + pd.Timedelta(days=5), y_top * 0.96,
                     label, rotation=90, fontsize=8, color=color, va="top")
 
-for fname_out, col, color, title in [
+for fname_out, col, color, title, unit in [
     ("plots/01a_brent.png",   "brent_eur",     "#2166ac",
-     "Brent Crude Oil 2019–2026 (EUR/barile)"),
+     "Brent Crude Oil 2019–2026 (EUR/barile)", "EUR/barile"),
     ("plots/01b_benzina.png", "benzina_eur_l", "#d6604d",
-     f"Benzina Italia senza tasse{tax_note} (EUR/litro)"),
+     f"Benzina Italia senza tasse{tax_note} (EUR/litro)", "EUR/litro"),
     ("plots/01c_diesel.png",  "diesel_eur_l",  "#31a354",
-     f"Diesel Italia senza tasse{tax_note} (EUR/litro)"),
+     f"Diesel Italia senza tasse{tax_note} (EUR/litro)", "EUR/litro"),
 ]:
     if col not in merged.columns:
         continue
     fig, ax = plt.subplots(figsize=(14, 4.5))
     ax.plot(merged.index, merged[col], color=color, lw=2.0)
     _war_lines(ax, merged[col].max())
-    ax.set_ylabel("EUR/" + ("barile" if "brent" in col else "litro"), fontsize=11)
+    ax.set_ylabel(unit, fontsize=11)
     ax.set_title(title, fontsize=12, fontweight="bold")
     ax.grid(alpha=0.3)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))

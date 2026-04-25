@@ -1,0 +1,17 @@
+fonte,tipo,descrizione,p_value
+Welch_t_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,0.00833377401327173
+MannWhitney_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,0.0078
+BlockPerm_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,0.0141
+HAC_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,0.0862
+Welch_t_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.038931757096306155
+MannWhitney_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.0049
+BlockPerm_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.0349
+HAC_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.0975
+Welch_t_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,0.3393656603068208
+MannWhitney_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,0.7406
+BlockPerm_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,0.7194
+HAC_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,0.5259
+Welch_t_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,0.0325230325220823
+MannWhitney_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,0.9923
+BlockPerm_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,0.923
+HAC_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,0.0625

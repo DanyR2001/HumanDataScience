@@ -1,56 +1,20 @@
 """
-03_margin_hypothesis.py
+03_margin_hypothesis.py  (fix: Hormuz aggiunto, unità EUR/L corrette)
 ========================
 Il margine lordo dei distributori italiani e' aumentato anomalmente
 rispetto al baseline 2019 dopo gli shock energetici?
 
-CATENA DECISIONALE:
-  1. Leggiamo i diagnostici OLS prodotti da 02_changepoint.py.
-     DW = 0.15-0.42 in tutti gli scenari -> autocorrelazione quasi perfetta.
-     SW p < 0.05 per Ucraina + Hormuz benzina -> non-normalita'.
-     BP p < 0.05 per 5/6 serie -> eteroschedasticita'.
-
-  2. Dati questi diagnostici, il Welch t-test e' il punto di partenza
-     perche' e' il test standard in letteratura (gestisce eteroschedasticita'
-     via varianze libere) ed e' richiesto come base per la BH correction.
-     Ma l'autocorrelazione forte (rho ~ 0.90) gonfia i gradi di liberta'
-     effettivi: i p-value del t-test sono ottimistici.
-
-  3. Aggiungiamo quindi tre test che non condividono le stesse assunzioni:
-     a. Mann-Whitney U + Hodges-Lehmann + Cliff's delta: non assume normalita'
-        ne' struttura parametrica. Testa se P(margine_post > margine_pre) > 0.5.
-     b. Block permutation test (block=4w): preserva l'autocorrelazione locale
-        nella distribuzione nulla permutando blocchi di 4 settimane anziche'
-        osservazioni singole. La statistica e' la differenza di mediane
-        (coerente con Mann-Whitney).
-     c. HAC Newey-West (maxlags=4): mantiene OLS ma corregge la matrice di
-        covarianza per autocorrelazione. Risponde alla domanda "la media
-        cambia, tenendo conto della dipendenza seriale?"
-
-  4. Tutti i test confirmatory (Welch t + MW + block perm + HAC) entrano
-     nella BH correction globale in 05_global_corrections.py.
-     I test vengono classificati come confirmatory perche' testano direttamente
-     la nostra H0 sul margine.
-
-  5. La classificazione finale segue la regola di decisione:
-     - Primaria: Welch t-test (per compatibilita' BH e letteratura)
-     - Se t-test e MW concordano: classificazione robusta
-     - Se divergono: segnalato esplicitamente con spiegazione
-
-NOTA sulla nomenclatura: le classificazioni descrivono il pattern statistico,
-non la causa economica. "Margine anomalo positivo" e' consistente anche con
-effetti FIFO/LIFO su inventario, risk premium razionale, cost-push non
-catturato dalla proxy ARA/ICE.
-
-H0: Il margine lordo post-shock non supera la soglia 2-sigma del baseline 2019.
+NOTA HORMUZ: i dati post-shock Hormuz (feb 2026) coprono solo ~7-8 settimane
+al momento dell'analisi. I risultati sono preliminari e da non citare come
+conclusivi nella relazione; vengono inclusi per completezza della pipeline.
 
 Input:
   data/dataset_merged_with_futures.csv
-  data/regression_diagnostics.csv      (da script 02)
+  data/regression_diagnostics.csv
 
 Output:
   data/table2_margin_anomaly.csv
-  data/confirmatory_pvalues.csv        (input per 05_global_corrections.py)
+  data/confirmatory_pvalues.csv
   data/baseline_sensitivity.csv
   plots/03_margins.png
   plots/03_delta_summary.png
@@ -73,31 +37,43 @@ os.makedirs("plots", exist_ok=True)
 ALPHA        = 0.05
 N_PERM       = 10_000
 SEED         = 42
-BLOCK_SIZE   = 4     # settimane (coerente con autocorrelazione stimata)
-HAC_MAXLAGS  = 4     # ~1 mese
+BLOCK_SIZE   = 4
+HAC_MAXLAGS  = 4
 DPI          = 180
 
 BASELINE_START = "2019-01-01"
 BASELINE_END   = "2019-12-31"
 
-# Hormuz escluso da Table 2: dati post-shock insufficienti al momento
-# dell'analisi (meno di 5 settimane utili).
 EVENTS = {
     "Ucraina (Feb 2022)": {
         "shock":     pd.Timestamp("2022-02-24"),
         "pre_start": pd.Timestamp("2021-09-01"),
         "post_end":  pd.Timestamp("2022-08-31"),
+        "preliminare": False,
     },
     "Iran-Israele (Giu 2025)": {
         "shock":     pd.Timestamp("2025-06-13"),
         "pre_start": pd.Timestamp("2025-01-01"),
         "post_end":  pd.Timestamp("2025-10-31"),
+        "preliminare": False,
+    },
+    "Hormuz (Feb 2026)": {
+        "shock":     pd.Timestamp("2026-02-28"),
+        "pre_start": pd.Timestamp("2025-10-01"),
+        "post_end":  pd.Timestamp("2026-04-27"),   # dati fino a oggi
+        "preliminare": True,   # <8 settimane post-shock
     },
 }
 
 MARGIN_COLS = {
     "Benzina": "margine_benz_crack",
     "Diesel":  "margine_dies_crack",
+}
+
+WAR_DATES = {
+    "Ucraina": (pd.Timestamp("2022-02-24"), "#e74c3c"),
+    "Iran":    (pd.Timestamp("2025-06-13"), "#e67e22"),
+    "Hormuz":  (pd.Timestamp("2026-02-28"), "#8e44ad"),
 }
 
 CLAS_COLOR = {
@@ -127,38 +103,32 @@ def bh_correction(p_values, alpha=0.05):
     return p_adj_out <= alpha, p_adj_out
 
 
-def block_permutation(combined: np.ndarray, n_post: int, rng,
-                      block_size: int = BLOCK_SIZE) -> float:
-    """Permutazione a blocchi di `block_size` settimane, statistica = delta mediana."""
+def block_permutation(combined, n_post, rng, block_size=BLOCK_SIZE):
     n = len(combined)
     n_blocks = int(np.ceil(n / block_size))
     blocks   = [combined[i*block_size : min((i+1)*block_size, n)]
                 for i in range(n_blocks)]
     rng.shuffle(blocks)
-    perm  = np.concatenate(blocks)
+    perm = np.concatenate(blocks)
     return float(np.median(perm[-n_post:]) - np.median(perm[:-n_post]))
 
 
-def perm_test(pre: np.ndarray, post: np.ndarray,
-              n_perm: int = N_PERM, rng=None) -> tuple:
+def perm_test(pre, post, n_perm=N_PERM, rng=None):
     if rng is None:
         rng = np.random.default_rng(SEED)
-    obs   = float(np.median(post) - np.median(pre))
-    comb  = np.concatenate([pre, post])
-    n_po  = len(post)
+    obs  = float(np.median(post) - np.median(pre))
+    comb = np.concatenate([pre, post])
+    n_po = len(post)
     nulls = [block_permutation(comb, n_po, rng) for _ in range(n_perm)]
-    p     = float(np.mean(np.array(nulls) >= obs))
+    p = float(np.mean(np.array(nulls) >= obs))
     return obs, p
 
 
-def mann_whitney_full(pre: np.ndarray, post: np.ndarray) -> dict:
-    """Mann-Whitney U con Hodges-Lehmann e Cliff's delta."""
+def mann_whitney_full(pre, post):
     U_one, p_one = mannwhitneyu(post, pre, alternative="greater")
     U_two, p_two = mannwhitneyu(post, pre, alternative="two-sided")
-    U_max        = len(pre) * len(post)
-    # Hodges-Lehmann: mediana delle differenze cross
+    U_max = len(pre) * len(post)
     hl  = float(np.median(np.array([p - q for p in post for q in pre])))
-    # Cliff's delta efficiente via searchsorted
     pre_s = np.sort(pre)
     more  = sum(np.searchsorted(pre_s, x, side="left")       for x in post)
     less  = sum(len(pre_s) - np.searchsorted(pre_s, x, "right") for x in post)
@@ -167,17 +137,16 @@ def mann_whitney_full(pre: np.ndarray, post: np.ndarray) -> dict:
              "piccolo"       if abs(cd) < 0.330 else
              "medio"         if abs(cd) < 0.474 else "grande")
     return {
-        "U_stat":  round(U_one, 1), "U_max": U_max,
-        "AUC":     round(float(U_one/U_max), 3),
-        "p_one":   round(p_one, 4),   "p_two":  round(p_two, 4),
+        "U_stat": round(U_one, 1), "U_max": U_max,
+        "AUC":    round(float(U_one/U_max), 3),
+        "p_one":  round(p_one, 4), "p_two": round(p_two, 4),
         "hodges_lehmann": round(hl, 5),
-        "cliffs_delta":   round(cd, 3), "magnitude": mag,
-        "mw_H0":   "RIFIUTATA" if p_one < ALPHA else "non rifiutata",
+        "cliffs_delta": round(cd, 3), "magnitude": mag,
+        "mw_H0": "RIFIUTATA" if p_one < ALPHA else "non rifiutata",
     }
 
 
-def hac_test(pre: np.ndarray, post: np.ndarray) -> dict:
-    """OLS con dummy post-shock e SE HAC Newey-West."""
+def hac_test(pre, post):
     y   = np.concatenate([pre, post])
     d   = np.concatenate([np.zeros(len(pre)), np.ones(len(post))])
     X   = sm.add_constant(d)
@@ -192,8 +161,7 @@ def hac_test(pre: np.ndarray, post: np.ndarray) -> dict:
         return {"delta_hac": np.nan, "hac_p": np.nan, "hac_H0": "errore"}
 
 
-def bootstrap_ci(pre: np.ndarray, post: np.ndarray,
-                 n_boot: int = 2000, seed: int = SEED) -> tuple:
+def bootstrap_ci(pre, post, n_boot=2000, seed=SEED):
     rng    = np.random.default_rng(seed)
     deltas = [rng.choice(post,len(post),replace=True).mean() -
               rng.choice(pre, len(pre), replace=True).mean()
@@ -207,31 +175,27 @@ def _stars(p):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Leggi diagnostici da script 02 e stampa contesto
+# Leggi diagnostici da script 02
 # ─────────────────────────────────────────────────────────────────────────────
 diag_path = "data/regression_diagnostics.csv"
 if os.path.exists(diag_path):
     df_diag = pd.read_csv(diag_path)
     print("Diagnostici OLS letti da script 02:\n")
     for _, r in df_diag.iterrows():
-        dw_flag  = "AUTOCORR" if float(r["DW"]) < 1.5 else "ok"
-        sw_flag  = "NON-NORM" if (r["SW_p"] is not None and
-                                   not np.isnan(float(r["SW_p"])) and
-                                   float(r["SW_p"]) < ALPHA) else "ok"
-        bp_flag  = "ETEROSC." if (r["BP_p"] is not None and
-                                   not np.isnan(float(r["BP_p"])) and
-                                   float(r["BP_p"]) < ALPHA) else "ok"
+        dw_flag = "AUTOCORR" if float(r["DW"]) < 1.5 else "ok"
+        sw_flag = "NON-NORM" if (r["SW_p"] is not None and
+                                  not np.isnan(float(r["SW_p"])) and
+                                  float(r["SW_p"]) < ALPHA) else "ok"
+        bp_flag = "ETEROSC." if (r["BP_p"] is not None and
+                                  not np.isnan(float(r["BP_p"])) and
+                                  float(r["BP_p"]) < ALPHA) else "ok"
         print(f"  {r['Evento'][:30]:30} | {r['Serie']:7}: "
               f"DW={r['DW']:.2f} [{dw_flag}]  "
               f"SW_p={r['SW_p']} [{sw_flag}]  "
               f"BP_p={r['BP_p']} [{bp_flag}]")
-
-    print("\nNota: DW < 1.5 in tutti gli scenari (rho ~ 0.85-0.92).")
-    print("  -> Welch t mantenuto come test primario (BH e confrontabilita'),")
-    print("     affiancato da Mann-Whitney, block permutation e HAC.\n")
+    print()
 else:
-    print("regression_diagnostics.csv non trovato — eseguire prima 02_changepoint.py")
-    print("Procedendo senza contesto diagnostico.\n")
+    print("regression_diagnostics.csv non trovato — eseguire prima 02_changepoint.py\n")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -242,9 +206,16 @@ merged = pd.read_csv("data/dataset_merged_with_futures.csv",
 print(f"Dataset: {len(merged)} settimane | "
       f"{merged.index[0].date()} – {merged.index[-1].date()}\n")
 
-# Normalizzazione unita' pompa (EU Bulletin a volte pubblica in EUR/1000L)
+# Safety check unità (se ancora in EUR/1000L normalizza qui)
 for raw_col, eur_l_col in [("benzina_4w","benzina_eur_l"),("diesel_4w","diesel_eur_l")]:
-    if raw_col in merged.columns and eur_l_col not in merged.columns:
+    if eur_l_col in merged.columns:
+        med = merged[eur_l_col].dropna().median()
+        if med > 10:
+            merged[eur_l_col] = merged[eur_l_col] / 1000.0
+            if raw_col in merged.columns:
+                merged[raw_col] = merged[eur_l_col]
+            print(f"  [safety] Normalizzato {eur_l_col} /1000")
+    elif raw_col in merged.columns:
         med = merged[raw_col].dropna().median()
         merged[eur_l_col] = merged[raw_col] / (1000.0 if med > 10 else 1.0)
 
@@ -261,7 +232,7 @@ for fuel, col in MARGIN_COLS.items():
         print(f"Baseline 2019 | {fuel}: mu={vals.mean():.5f}  "
               f"sigma={vals.std():.5f}  soglia 2sigma={thresholds[fuel]:.5f} EUR/L")
 
-# Sensitivity baseline (2019 primario vs Full-2021 come check)
+# Sensitivity baseline
 sens_rows = []
 for bl_label, bl_start, bl_end in [
     ("2019_full", "2019-01-01","2019-12-31"),
@@ -281,21 +252,23 @@ if sens_rows:
     print("\nSensitivity baseline (2019 vs 2021):")
     for r in sens_rows:
         print(f"  {r['baseline']:10} | {r['serie']:22}: 2sigma={r['soglia_2sigma']:.5f}")
-
 print()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test H0 per ogni evento x carburante
 # ─────────────────────────────────────────────────────────────────────────────
-results        = []
-conf_pvalues   = []   # raccogliti per BH globale in script 05
-rng_perm       = np.random.default_rng(SEED)
+results      = []
+conf_pvalues = []
+rng_perm     = np.random.default_rng(SEED)
 
 for ev_name, cfg in EVENTS.items():
     shock = cfg["shock"]
+    prelim = cfg.get("preliminare", False)
+    prelim_note = " [PRELIMINARE: dati post-shock limitati]" if prelim else ""
+
     print("="*65)
-    print(f"{ev_name}")
+    print(f"{ev_name}{prelim_note}")
     print("="*65)
 
     for fuel, margin_col in MARGIN_COLS.items():
@@ -309,28 +282,26 @@ for ev_name, cfg in EVENTS.items():
         post_m = df_ev.iloc[shi:][margin_col].dropna().values
 
         if len(pre_m) < 4 or len(post_m) < 4:
-            print(f"  {fuel}: campioni troppo piccoli — skip")
+            print(f"  {fuel}: campioni troppo piccoli (pre={len(pre_m)}, post={len(post_m)}) — skip")
             continue
 
-        # 1. Welch t-test (test primario)
-        t_stat, t_p    = stats.ttest_ind(post_m, pre_m, equal_var=False)
-        delta_mean     = float(post_m.mean() - pre_m.mean())
+        # 1. Welch t-test
+        t_stat, t_p = stats.ttest_ind(post_m, pre_m, equal_var=False)
+        delta_mean  = float(post_m.mean() - pre_m.mean())
         boot_m, b_lo, b_hi = bootstrap_ci(pre_m, post_m)
 
-        # 2. Mann-Whitney + HL + Cliff's delta (non-normalita')
+        # 2. Mann-Whitney
         mw = mann_whitney_full(pre_m, post_m)
 
-        # 3. Block permutation (autocorrelazione)
+        # 3. Block permutation
         obs_perm, p_perm = perm_test(pre_m, post_m, rng=rng_perm)
 
-        # 4. HAC Newey-West (correzione autocorrelazione parametrica)
+        # 4. HAC
         hac = hac_test(pre_m, post_m)
 
-        # Soglia 2sigma
         soglia  = thresholds.get(fuel, 0.030)
         anomalo = abs(delta_mean) > soglia
 
-        # Classificazione: Welch t come gate primario
         stat_sig = t_p < ALPHA
         if stat_sig and anomalo and delta_mean > 0:
             clas = "Margine anomalo positivo"
@@ -343,7 +314,6 @@ for ev_name, cfg in EVENTS.items():
         else:
             clas = "Inconclusivo"
 
-        # Segnala divergenza tra t-test e MW
         divergence = ""
         if (t_p < ALPHA) != (mw["p_one"] < ALPHA):
             divergence = (
@@ -352,7 +322,8 @@ for ev_name, cfg in EVENTS.items():
             )
 
         print(f"\n  {fuel}")
-        print(f"    n pre={len(pre_m)}  n post={len(post_m)}")
+        print(f"    n pre={len(pre_m)}  n post={len(post_m)}"
+              + (" [DATI LIMITATI]" if prelim else ""))
         print(f"    delta_mean = {delta_mean:+.5f} EUR/L  "
               f"[boot CI: {b_lo:+.5f}, {b_hi:+.5f}]")
         print(f"    soglia 2sigma = {soglia:.5f}  |  delta anomalo: {anomalo}")
@@ -366,12 +337,15 @@ for ev_name, cfg in EVENTS.items():
         print(f"    HAC: delta={hac['delta_hac']:+.5f}  "
               f"p={hac['hac_p']} {_stars(hac['hac_p']) if not np.isnan(hac['hac_p']) else ''}")
         print(f"    Classificazione: {clas}")
+        if prelim:
+            print(f"    NOTA: risultato PRELIMINARE — solo {len(post_m)} settimane post-shock")
         if divergence:
             print(f"    {divergence}")
 
         row = {
             "Evento":             ev_name,
             "Carburante":         fuel,
+            "preliminare":        prelim,
             "n_pre":              len(pre_m),
             "n_post":             len(post_m),
             "delta_mean_eur":     round(delta_mean, 5),
@@ -379,52 +353,54 @@ for ev_name, cfg in EVENTS.items():
             "boot_CI_hi":         round(b_hi, 5),
             "soglia_2sigma":      round(soglia, 5),
             "delta_anomalo":      anomalo,
-            # Welch t
             "t_stat":             round(float(t_stat), 4),
             "t_p":                round(float(t_p), 4),
             "t_H0":               "RIFIUTATA" if stat_sig else "non rifiutata",
-            # Mann-Whitney
             **{f"mw_{k}": v for k,v in mw.items()},
-            # Block permutation
             "perm_delta_med":     round(obs_perm, 5),
             "perm_p":             round(p_perm, 4),
             "perm_H0":            "RIFIUTATA" if p_perm < ALPHA else "non rifiutata",
-            # HAC
             **{f"hac_{k}": v for k,v in hac.items()},
-            # Sintesi
             "classificazione":    clas,
             "divergenza_t_mw":    divergence,
         }
         results.append(row)
 
-        # Raccolta p-value confirmatory per BH globale
-        for fonte, p_val in [
-            (f"Welch_t_{ev_name}_{fuel}",    float(t_p)),
-            (f"MannWhitney_{ev_name}_{fuel}", float(mw["p_one"])),
-            (f"BlockPerm_{ev_name}_{fuel}",   float(p_perm)),
-            (f"HAC_{ev_name}_{fuel}",         float(hac["hac_p"])
-             if not np.isnan(hac["hac_p"]) else None),
-        ]:
-            if p_val is not None and not np.isnan(p_val):
-                conf_pvalues.append({
-                    "fonte": fonte, "tipo": "confirmatory",
-                    "descrizione": f"{ev_name} | {fuel}",
-                    "p_value": p_val,
-                })
+        # Solo eventi non preliminari entrano nella BH correction
+        if not prelim:
+            for fonte, p_val in [
+                (f"Welch_t_{ev_name}_{fuel}",    float(t_p)),
+                (f"MannWhitney_{ev_name}_{fuel}", float(mw["p_one"])),
+                (f"BlockPerm_{ev_name}_{fuel}",   float(p_perm)),
+                (f"HAC_{ev_name}_{fuel}",         float(hac["hac_p"])
+                 if not np.isnan(hac["hac_p"]) else None),
+            ]:
+                if p_val is not None and not np.isnan(p_val):
+                    conf_pvalues.append({
+                        "fonte": fonte, "tipo": "confirmatory",
+                        "descrizione": f"{ev_name} | {fuel}",
+                        "p_value": p_val,
+                    })
+        else:
+            print(f"    [skip BH] Hormuz escluso dalla BH correction (dati preliminari)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BH correction locale (sui test primari Welch t — per Table 2)
+# BH correction locale (sui test primari Welch t)
 # ─────────────────────────────────────────────────────────────────────────────
 df_res = pd.DataFrame(results)
 if not df_res.empty:
-    bh_rej, bh_adj = bh_correction(df_res["t_p"].values, alpha=ALPHA)
-    df_res["BH_reject_local"] = bh_rej
-    df_res["t_p_BH_adj"]      = bh_adj
+    # BH solo sui non-preliminari
+    df_nonprel = df_res[~df_res["preliminare"]]
+    if not df_nonprel.empty:
+        bh_rej, bh_adj = bh_correction(df_nonprel["t_p"].values, alpha=ALPHA)
+        df_res.loc[df_nonprel.index, "BH_reject_local"] = bh_rej
+        df_res.loc[df_nonprel.index, "t_p_BH_adj"]     = bh_adj
+        df_res["BH_reject_local"] = df_res["BH_reject_local"].fillna(False)
+        df_res["t_p_BH_adj"]      = df_res["t_p_BH_adj"].fillna(np.nan)
 
-    # Riclassificazione con BH locale
     def _reclassify(row):
-        if not row["BH_reject_local"]:
+        if pd.isna(row.get("BH_reject_local")) or not row["BH_reject_local"]:
             return "Neutro / trasmissione attesa" if not row["delta_anomalo"] \
                    else "Variazione statistica"
         return row["classificazione"]
@@ -432,23 +408,17 @@ if not df_res.empty:
 
     df_res.to_csv("data/table2_margin_anomaly.csv", index=False)
     print(f"\nSalvato: data/table2_margin_anomaly.csv ({len(df_res)} righe)")
-    n_rej = int(bh_rej.sum())
-    print(f"BH locale (su Welch t): {n_rej}/{len(df_res)} test rigettati a FDR 5%")
+    n_rej = int(df_res["BH_reject_local"].sum())
+    print(f"BH locale (su Welch t non-preliminari): "
+          f"{n_rej}/{len(df_nonprel)} test rigettati a FDR 5%")
 
-# Salva p-value confirmatory per script 05
 pd.DataFrame(conf_pvalues).to_csv("data/confirmatory_pvalues.csv", index=False)
 print(f"Salvato: data/confirmatory_pvalues.csv ({len(conf_pvalues)} test)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Plot margini nel tempo
+# Plot 1: margini nel tempo con banda baseline
 # ─────────────────────────────────────────────────────────────────────────────
-WAR_DATES = {
-    "Ucraina": (pd.Timestamp("2022-02-24"), "#e74c3c"),
-    "Iran":    (pd.Timestamp("2025-06-13"), "#e67e22"),
-    "Hormuz":  (pd.Timestamp("2026-02-28"), "#8e44ad"),
-}
-
 def _war_lines(ax, y_top):
     for label, (dt, color) in WAR_DATES.items():
         if merged.index[0] <= dt <= merged.index[-1]:
@@ -470,12 +440,16 @@ for ax, (fuel, col), color in zip(
     bl = baseline_data[col].dropna()
     if len(bl) >= 4:
         ax.axhspan(bl.mean()-2*bl.std(), bl.mean()+2*bl.std(),
-                   alpha=0.12, color="#888", label="Baseline +/-2sigma (2019)")
+                   alpha=0.12, color="#888", label="Baseline ±2σ (2019)")
         ax.axhline(bl.mean(), color="#888", lw=1.0, ls="--")
     _war_lines(ax, s.max())
     ax.set_ylabel("Margine lordo (EUR/litro)", fontsize=10)
     ax.set_title(f"Margine crack spread — {fuel}", fontsize=11, fontweight="bold")
     ax.legend(fontsize=9); ax.grid(alpha=0.3)
+    # Annotazione range atteso
+    ax.text(merged.index[5], bl.mean() if len(bl) >= 4 else s.mean(),
+            f"media 2019: {bl.mean():.3f} EUR/L" if len(bl) >= 4 else "",
+            fontsize=8, color="#555")
 
 axes_m[-1].xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
 axes_m[-1].xaxis.set_major_locator(mdates.MonthLocator(interval=3))
@@ -487,13 +461,16 @@ print("Salvato: plots/03_margins.png")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Plot delta summary
+# Plot 2: delta summary (solo eventi non-preliminari per il grafico principale)
 # ─────────────────────────────────────────────────────────────────────────────
 if not df_res.empty:
     clas_col = "classificazione_BH" if "classificazione_BH" in df_res.columns \
                else "classificazione"
+
+    # Plot tutti gli eventi (incluso Hormuz con marcatura visiva)
     fig_s, ax_s = plt.subplots(figsize=(14, max(5, len(df_res)*0.85)))
     labels  = [f"{r['Evento'].split('(')[0].strip()}\n{r['Carburante']}"
+               + (" ⚠ preliminare" if r['preliminare'] else "")
                for _, r in df_res.iterrows()]
     deltas  = df_res["delta_mean_eur"].values
     ci_lo   = df_res["boot_CI_lo"].values
@@ -506,13 +483,15 @@ if not df_res.empty:
         ax_s.errorbar(deltas[i], i,
                       xerr=[[deltas[i]-ci_lo[i]],[ci_hi[i]-deltas[i]]],
                       fmt="none", color="black", capsize=5, lw=1.8)
-        ax_s.text(max(ci_hi[i], deltas[i])+0.003, i,
-                  df_res.iloc[i][clas_col][:30], va="center", fontsize=8)
+        lbl = df_res.iloc[i][clas_col][:30]
+        if df_res.iloc[i]["preliminare"]:
+            lbl += " [prelim.]"
+        ax_s.text(max(ci_hi[i], deltas[i])+0.003, i, lbl, va="center", fontsize=8)
     ax_s.axvline(0, color="black", lw=0.8)
     ax_s.set_yticks(range(len(df_res))); ax_s.set_yticklabels(labels, fontsize=9)
     ax_s.set_xlabel("Delta margine lordo post-shock (EUR/litro)", fontsize=11)
     ax_s.set_title("Variazione margine lordo — classificazione con BH FDR 5%\n"
-                   "(etichette descrivono pattern statistico, non causa economica)",
+                   "(⚠ Hormuz = dati preliminari, <8 settimane post-shock)",
                    fontsize=12, fontweight="bold")
     ax_s.legend(handles=[mpatches.Patch(color=c,label=k)
                          for k,c in CLAS_COLOR.items()],
@@ -526,5 +505,5 @@ if not df_res.empty:
 
 print("\nScript 03 completato.")
 print("  H0 testata con Welch t + Mann-Whitney + Block perm + HAC.")
-print("  Classificazione finale: Welch t come gate primario (BH locale).")
+print("  Hormuz incluso come preliminare (escluso dalla BH correction).")
 print("  data/confirmatory_pvalues.csv -> input per 05_global_corrections.py")
