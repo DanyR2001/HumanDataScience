@@ -54,6 +54,28 @@ Output:
   data/baseline_sensitivity.csv
   plots/03_margins.png                  <- ora include τ_price e τ_margin
   plots/03_delta_summary.png
+
+NOTA SULLA DOPPIA IMPLEMENTAZIONE PERM/HAC
+--------------------------------------------
+Block permutation e HAC vengono eseguiti con due split distinti:
+
+  [PRINCIPALE]  split su τ_price (changepoint sul log-prezzo, da script 02).
+    - Esogeno al margine → nessuna circolarità.
+    - Pre window termina prima del segnale anticipatorio di prezzo.
+    - Entra nella famiglia BH correction (confirmatory_pvalues.csv).
+
+  [ROBUSTNESS]  split su τ_margin (changepoint strutturale del margine stesso).
+    - Endogeno: massimizza il segnale catturato nella finestra post.
+    - Utile quando τ_margin ≠ τ_price (IRAN-ISRAELE: τ_margin precede τ_price
+      di ~7gg; UCRAINA: τ_margin segue τ_price di ~70gg).
+    - NON entra nella BH; riportato come check metodologico nel CSV.
+
+Convergenza perm_split_convergence / hac_split_convergence:
+  True  → entrambi gli split concordano sul rigetto/non-rigetto. Risultato robusto.
+  False → divergenza: documentare nella discussione del paper.
+
+Il Welch 1-sample (test primario BH) non è influenzato dalla scelta dello
+split perché confronta solo la finestra post vs μ_2019, senza usare un pre.
 """
 
 import os, warnings
@@ -214,35 +236,52 @@ def run_tests_at_split(margin_series: pd.Series,
                        split_date: pd.Timestamp,
                        mu_2019: float,
                        soglia: float,
-                       rng_perm) -> dict:
+                       rng_perm,
+                       pre_override: np.ndarray = None,
+                       skip_perm_hac: bool = False) -> dict:
     """
     Esegue la batteria completa (Welch 1-sample, MW, block perm, HAC)
     con la finestra pre/post definita da split_date.
-    Restituisce un dict con i risultati principali.
+
+    Parametri aggiuntivi:
+      pre_override   — array numpy da usare come 'pre' per MW, perm, HAC al
+                       posto della finestra ricavata da split_date. Tipico uso:
+                       passare la distribuzione 2019 come baseline esogena.
+      skip_perm_hac  — se True, salta block permutation e HAC (usato per
+                       split "pre_2019" dove perm/HAC non sono temporalmente
+                       validi: 2019 e post-evento non sono adiacenti).
     """
     idx = int(np.clip(margin_series.index.searchsorted(split_date),
                       2, len(margin_series) - 2))
-    pre  = margin_series.iloc[:idx].values
-    post = margin_series.iloc[idx:].values
-    if len(pre) < 4 or len(post) < 4:
-        return {"ok": False, "n_pre": len(pre), "n_post": len(post)}
+    pre_from_split = margin_series.iloc[:idx].values
+    post           = margin_series.iloc[idx:].values
+    pre_for_tests  = pre_override if pre_override is not None else pre_from_split
+
+    if len(pre_for_tests) < 4 or len(post) < 4:
+        return {"ok": False, "n_pre": len(pre_for_tests), "n_post": len(post)}
 
     # H0: μ_post = μ_2019   H1: μ_post > μ_2019  (one-sample, one-sided upper)
     t_s, t_p = stats.ttest_1samp(post, popmean=mu_2019, alternative="greater")
     delta_vs_bl = float(post.mean() - mu_2019)
-    delta_local = float(post.mean() - pre.mean())
+    # delta_local usa sempre pre_from_split (confronto locale intorno all'evento)
+    delta_local  = float(post.mean() - pre_from_split.mean())
 
     # Pre vs baseline
-    _, t_p_pre = stats.ttest_1samp(pre, popmean=mu_2019, alternative="greater")
-    delta_pre_bl = float(pre.mean() - mu_2019)
+    _, t_p_pre = stats.ttest_1samp(pre_from_split, popmean=mu_2019, alternative="greater")
+    delta_pre_bl = float(pre_from_split.mean() - mu_2019)
 
-    mw       = mann_whitney_full(pre, post)
-    obs_perm, p_perm = perm_test(pre, post, rng=rng_perm)
-    hac      = hac_test(pre, post)
+    mw = mann_whitney_full(pre_for_tests, post)
+
+    if skip_perm_hac:
+        obs_perm, p_perm = np.nan, np.nan
+        hac = {"delta_hac": np.nan, "hac_p": np.nan}
+    else:
+        obs_perm, p_perm = perm_test(pre_for_tests, post, rng=rng_perm)
+        hac              = hac_test(pre_for_tests, post)
 
     return {
         "ok":           True,
-        "n_pre":        len(pre),
+        "n_pre":        len(pre_for_tests),
         "n_post":       len(post),
         "split_date":   split_date.strftime("%Y-%m-%d"),
         "delta_vs_bl":  round(delta_vs_bl, 5),
@@ -256,8 +295,8 @@ def run_tests_at_split(margin_series: pd.Series,
         "mw_p_one":     mw["p_one"],
         "mw_cliff":     mw["cliffs_delta"],
         "mw_hl":        mw["hodges_lehmann"],
-        "perm_p":       round(p_perm, 4),
-        "perm_delta":   round(obs_perm, 5),
+        "perm_p":       round(p_perm, 4) if not np.isnan(p_perm) else np.nan,
+        "perm_delta":   round(obs_perm, 5) if not np.isnan(obs_perm) else np.nan,
         "hac_p":        hac["hac_p"],
         "hac_delta":    hac["delta_hac"],
     }
@@ -488,14 +527,99 @@ for ev_name, cfg in EVENTS.items():
         n_weeks_above      = int((excess_series > 0).sum())
         n_weeks_below      = int((excess_series < 0).sum())
 
-        # ── 2. Mann-Whitney (pre vs post — salto locale) ──────────────────
-        mw = mann_whitney_full(pre_m, post_m)
+        # ── Determinazione split per test locali ──────────────────────────
+        # Il problema dello split shock_hard per i test locali (MW, perm, HAC):
+        # quando τ_price precede shock_hard di 46-73 giorni (caso anticipatorio),
+        # la finestra "pre" include già il periodo in cui il margine stava salendo.
+        # Questo contamina il gruppo di controllo e sottostima il δ locale.
+        #
+        # Strategia per test differenti:
+        #   MW  → usa la distribuzione 2019 come pre (baseline esogena, nessuna
+        #          assunzione di adiacenza temporale). Allinea MW direttamente
+        #          con l'H0 del Welch 1-sample. Conservativo e pulito.
+        #   perm, HAC → richiedono adiacenza temporale. Due implementazioni:
+        #
+        #     [PRINCIPALE]   split su τ_price — esogeno al margine (stimato sui
+        #          prezzi, nessuna circolarità). Pre window termina prima del
+        #          segnale anticipatorio. Fallback su shock_hard se τ_price non
+        #          disponibile o posteriore allo shock.
+        #
+        #     [ROBUSTNESS]   split su τ_margin — usa il changepoint del margine
+        #          stesso come confine. Endogeno ma massimizza il segnale nella
+        #          finestra post; utile quando τ_margin ≠ τ_price.
+        #          TENSIONE IRAN-ISRAELE: τ_margin (21 apr) precede τ_price
+        #          (28 apr) di 7gg. Con τ_price come split, i 7gg di rottura
+        #          del margine precedenti finiscono nel "post" → effetto trascura-
+        #          bile in pratica. Il robustness check con τ_margin isola
+        #          esattamente la pre-window libera da questa ambiguità.
+        #          UCRAINA: τ_margin = +70gg rispetto a τ_price → la pre window
+        #          con τ_price è genuinamente pulita; il robustness dà risultati
+        #          attesi più conservativi (pre window più breve).
+        #
+        #     Entrambi i risultati vengono salvati nel CSV. Il principale (τ_price)
+        #     entra nella BH correction; il robustness è riportato come check.
+        #
+        # NOTA: il Welch 1-sample (test primario BH) rimane invariato — usa
+        # shock_hard come split perché confronta solo la finestra post vs μ_2019,
+        # indipendentemente da dove si trova il confine pre/post.
+
+        # 2019 baseline come pre per MW
+        bl_pre_m = merged.loc[BASELINE_START:BASELINE_END, margin_col].dropna().values
+
+        # ── Split PRINCIPALE per perm/HAC: τ_price ────────────────────────
+        if (tau_price_date is not None
+                and cfg["pre_start"] < tau_price_date < shock
+                and tau_price_date < cfg["post_end"]):
+            shi_lc = int(np.clip(df_ev.index.searchsorted(tau_price_date), 2, len(df_ev)-2))
+            pre_lc  = df_ev.iloc[:shi_lc][margin_col].dropna().values
+            post_lc = df_ev.iloc[shi_lc:][margin_col].dropna().values
+            split_lc_lbl = f"tau_price ({tau_price_date.date()})"
+        else:
+            pre_lc, post_lc = pre_m, post_m
+            split_lc_lbl = "shock_hard (fallback τ_price N/A)"
+
+        # Fallback campioni troppo piccoli
+        if len(pre_lc) < 4 or len(post_lc) < 4:
+            pre_lc, post_lc = pre_m, post_m
+            split_lc_lbl = "shock_hard (fallback piccolo campione)"
+
+        # ── Split ROBUSTNESS per perm/HAC: τ_margin ───────────────────────
+        # τ_margin è già calcolato sopra (margin_changepoint_date).
+        # È endogeno al margine ma cattura esattamente la rottura strutturale;
+        # usato solo come check, non entra nella BH correction.
+        if (tau_margin_date is not None
+                and cfg["pre_start"] < tau_margin_date < cfg["post_end"]):
+            shi_tm = int(np.clip(df_ev.index.searchsorted(tau_margin_date), 2, len(df_ev)-2))
+            pre_tm  = df_ev.iloc[:shi_tm][margin_col].dropna().values
+            post_tm = df_ev.iloc[shi_tm:][margin_col].dropna().values
+            split_tm_lbl = f"tau_margin ({tau_margin_date.date()})"
+        else:
+            pre_tm, post_tm = pre_m, post_m
+            split_tm_lbl = "shock_hard (fallback τ_margin N/A)"
+
+        if len(pre_tm) < 4 or len(post_tm) < 4:
+            pre_tm, post_tm = pre_m, post_m
+            split_tm_lbl = "shock_hard (fallback piccolo campione τ_margin)"
+
+        # ── 2. Mann-Whitney (post vs distribuzione 2019 — baseline esogena) ──
+        # Testa se la distribuzione post-shock stochasticamente domina il 2019.
+        # Allineato con H0 Welch: entrambi i test ora confrontano il post con il 2019.
+        mw = mann_whitney_full(bl_pre_m, post_m)
+
+        # Versione locale shock_hard (mantenuta per confronto nel CSV)
+        mw_local = mann_whitney_full(pre_m, post_m)
 
         # ── 3. Block permutation ──────────────────────────────────────────
-        obs_perm, p_perm = perm_test(pre_m, post_m, rng=rng_perm)
+        # [3a] Principale: split τ_price (entra nella BH correction)
+        obs_perm, p_perm = perm_test(pre_lc, post_lc, rng=rng_perm)
+        # [3b] Robustness: split τ_margin (check metodologico, fuori dalla BH)
+        obs_perm_tm, p_perm_tm = perm_test(pre_tm, post_tm, rng=rng_perm)
 
         # ── 4. HAC ───────────────────────────────────────────────────────
-        hac = hac_test(pre_m, post_m)
+        # [4a] Principale: split τ_price (entra nella BH correction)
+        hac = hac_test(pre_lc, post_lc)
+        # [4b] Robustness: split τ_margin (check metodologico, fuori dalla BH)
+        hac_tm = hac_test(pre_tm, post_tm)
 
         stat_sig = t_p < ALPHA
         if stat_sig and anomalo and delta_mean > 0:
@@ -529,14 +653,25 @@ for ev_name, cfg in EVENTS.items():
         print(f"    Welch t (1-sample vs μ_2019, one-sided): "
               f"t={t_stat:.3f}  p={t_p:.4f} {_stars(t_p)}")
         print(f"    Welch t pre vs baseline: t={t_pre:.3f}  p={t_p_pre:.4f} {_stars(t_p_pre)}")
-        print(f"    Mann-Whitney (pre vs post): AUC={mw['AUC']:.3f}  "
+        print(f"    Mann-Whitney (post vs 2019 baseline, n_2019={len(bl_pre_m)}): "
+              f"AUC={mw['AUC']:.3f}  "
               f"p(one)={mw['p_one']:.4f} {_stars(mw['p_one'])}  "
               f"HL={mw['hodges_lehmann']:+.5f}  Cliff={mw['cliffs_delta']:+.3f} "
               f"[{mw['magnitude']}]")
-        print(f"    Block perm: delta_med={obs_perm:+.5f}  "
-              f"p={p_perm:.4f} {_stars(p_perm)}")
-        print(f"    HAC: delta={hac['delta_hac']:+.5f}  "
+        print(f"    MW_local (post vs pre shock_hard, per confronto): "
+              f"p(one)={mw_local['p_one']:.4f} {_stars(mw_local['p_one'])}")
+        print(f"    Block perm [PRINCIPALE — split={split_lc_lbl}]: "
+              f"delta_med={obs_perm:+.5f}  p={p_perm:.4f} {_stars(p_perm)}")
+        p_perm_tm_str = f"{p_perm_tm:.4f} {_stars(p_perm_tm)}" if not np.isnan(p_perm_tm) else "N/A"
+        print(f"    Block perm [ROBUSTNESS — split={split_tm_lbl}]: "
+              f"delta_med={obs_perm_tm:+.5f}  p={p_perm_tm_str}")
+        print(f"    HAC        [PRINCIPALE — split={split_lc_lbl}]: "
+              f"delta={hac['delta_hac']:+.5f}  "
               f"p={hac['hac_p']} {_stars(hac['hac_p']) if not np.isnan(hac['hac_p']) else ''}")
+        hac_tm_p_str = (f"{hac_tm['hac_p']} {_stars(hac_tm['hac_p'])}"
+                        if not np.isnan(hac_tm["hac_p"]) else "N/A")
+        print(f"    HAC        [ROBUSTNESS — split={split_tm_lbl}]: "
+              f"delta={hac_tm['delta_hac']:+.5f}  p={hac_tm_p_str}")
         tp_str  = tau_price_date.strftime("%Y-%m-%d") if tau_price_date else "N/A"
         tm_str  = tau_margin_date.strftime("%Y-%m-%d") if tau_margin_date is not None else "N/A"
         print(f"    τ_price  = {tp_str}  |  τ_margin = {tm_str}  "
@@ -591,30 +726,78 @@ for ev_name, cfg in EVENTS.items():
             "t_stat":                  round(float(t_stat), 4),
             "t_p":                     round(float(t_p), 4),
             "t_H0":                    "RIFIUTATA" if stat_sig else "non rifiutata",
-            **{f"mw_{k}": v for k,v in mw.items()},
-            "perm_delta_med":          round(obs_perm, 5),
-            "perm_p":                  round(p_perm, 4),
-            "perm_H0":                 "RIFIUTATA" if p_perm < ALPHA else "non rifiutata",
-            **{f"hac_{k}": v for k,v in hac.items()},
+            # ── MW: ora vs 2019 baseline (primario) ──────────────────────
+            **{f"mw_{k}": v for k, v in mw.items()},
+            "mw_n_pre_2019":           len(bl_pre_m),
+            # ── MW_local: vs shock_hard pre (confronto) ──────────────────
+            "mw_local_p_one":          mw_local["p_one"],
+            "mw_local_cliff":          mw_local["cliffs_delta"],
+            # ── Perm/HAC [PRINCIPALE]: split τ_price — entra nella BH ──────
+            "split_main_type":         split_lc_lbl,
+            "n_pre_main":              len(pre_lc),
+            "n_post_main":             len(post_lc),
+            "perm_delta_med":          round(obs_perm, 5) if not np.isnan(obs_perm) else np.nan,
+            "perm_p":                  round(p_perm, 4) if not np.isnan(p_perm) else np.nan,
+            "perm_H0":                 ("RIFIUTATA" if (not np.isnan(p_perm) and p_perm < ALPHA)
+                                        else "non rifiutata"),
+            **{f"hac_{k}": v for k, v in hac.items()},
+            # ── Perm/HAC [ROBUSTNESS]: split τ_margin — fuori dalla BH ─────
+            # Controlla che le conclusioni del principale reggano quando il
+            # confine pre/post coincide esattamente con la rottura del margine.
+            # Convergenza: stesso segno di rigetto → risultato robusto alla
+            # scelta dello split. Divergenza: documentare nella tabella.
+            "split_robustness_type":   split_tm_lbl,
+            "n_pre_robustness":        len(pre_tm),
+            "n_post_robustness":       len(post_tm),
+            "perm_rob_delta_med":      round(obs_perm_tm, 5) if not np.isnan(obs_perm_tm) else np.nan,
+            "perm_rob_p":              round(p_perm_tm, 4) if not np.isnan(p_perm_tm) else np.nan,
+            "perm_rob_H0":             ("RIFIUTATA" if (not np.isnan(p_perm_tm) and p_perm_tm < ALPHA)
+                                        else "non rifiutata"),
+            **{f"hac_rob_{k}": v for k, v in hac_tm.items()},
+            # ── Convergenza principale vs robustness ──────────────────────
+            # True = entrambi gli split concordano sul rigetto / non-rigetto di H0
+            "perm_split_convergence":  (
+                (not np.isnan(p_perm) and not np.isnan(p_perm_tm)) and
+                ((p_perm < ALPHA) == (p_perm_tm < ALPHA))
+            ),
+            "hac_split_convergence":   (
+                (not np.isnan(hac["hac_p"]) and not np.isnan(hac_tm["hac_p"])) and
+                ((hac["hac_p"] < ALPHA) == (hac_tm["hac_p"] < ALPHA))
+            ),
             "classificazione":         clas,
             "divergenza_t_mw":         divergence,
         }
         results.append(row)
 
-        # Solo eventi non preliminari entrano nella BH correction
+        # Solo eventi non preliminari entrano nella BH correction.
+        # Perm e HAC: entra il PRINCIPALE (split τ_price), non il robustness.
+        # Logica: τ_price è esogeno al margine → nessuna circolarità; è lo
+        # split metodologicamente difendibile per il test primario.
         if not prelim:
-            for fonte, p_val in [
-                (f"Welch_t_{ev_name}_{fuel}",    float(t_p)),
-                (f"MannWhitney_{ev_name}_{fuel}", float(mw["p_one"])),
-                (f"BlockPerm_{ev_name}_{fuel}",   float(p_perm)),
+            perm_conv = (
+                (not np.isnan(p_perm) and not np.isnan(p_perm_tm)) and
+                ((p_perm < ALPHA) == (p_perm_tm < ALPHA))
+            )
+            hac_conv = (
+                (not np.isnan(hac["hac_p"]) and not np.isnan(hac_tm["hac_p"])) and
+                ((hac["hac_p"] < ALPHA) == (hac_tm["hac_p"] < ALPHA))
+            )
+            for fonte, p_val, note in [
+                (f"Welch_t_{ev_name}_{fuel}",    float(t_p),            ""),
+                (f"MannWhitney_{ev_name}_{fuel}", float(mw["p_one"]),    "vs 2019"),
+                (f"BlockPerm_{ev_name}_{fuel}",   float(p_perm)
+                 if not np.isnan(p_perm) else None,
+                 f"split={split_lc_lbl}; rob_p={p_perm_tm:.4f} conv={'✓' if perm_conv else '✗'}"),
                 (f"HAC_{ev_name}_{fuel}",         float(hac["hac_p"])
-                 if not np.isnan(hac["hac_p"]) else None),
+                 if not np.isnan(hac["hac_p"]) else None,
+                 f"split={split_lc_lbl}; rob_p={hac_tm['hac_p']} conv={'✓' if hac_conv else '✗'}"),
             ]:
                 if p_val is not None and not np.isnan(p_val):
                     conf_pvalues.append({
                         "fonte": fonte, "tipo": "confirmatory",
                         "descrizione": f"{ev_name} | {fuel}",
                         "p_value": p_val,
+                        "note_split": note,
                     })
         else:
             print(f"    [skip BH] Hormuz escluso dalla BH correction (dati preliminari)")
@@ -660,10 +843,14 @@ for ev_name, cfg in EVENTS.items():
                            if prim_row and prim_row["tau_margin"] not in ("N/A", None, "")
                            else None)
 
+        # baseline 2019 per MW nel multi-split
+        bl_pre_ms = merged.loc[BASELINE_START:BASELINE_END, margin_col].dropna().values
+
         splits = {
             "shock_hard":  cfg["shock"],
             "tau_price":   tau_price_date,
             "tau_margin":  tau_margin_date,
+            "pre_2019":    cfg["shock"],   # usa shock_hard per definire post; pre = 2019 baseline
         }
 
         print(f"\n  {ev_name}{prelim_note} — {fuel}")
@@ -676,38 +863,56 @@ for ev_name, cfg in EVENTS.items():
                 print(f"  {split_label:12}  {'N/A':12}  — split non disponibile")
                 continue
 
-            res = run_tests_at_split(margin_series, split_date,
-                                     mu_2019, soglia, rng_ms)
+            # pre_2019: usa 2019 come pre per MW, salta perm/HAC (non temporalmente adiacenti)
+            if split_label == "pre_2019":
+                res = run_tests_at_split(margin_series, split_date,
+                                         mu_2019, soglia, rng_ms,
+                                         pre_override=bl_pre_ms,
+                                         skip_perm_hac=True)
+                split_date_str = f"{str(split_date.date())} (post); pre=2019"
+            else:
+                res = run_tests_at_split(margin_series, split_date,
+                                         mu_2019, soglia, rng_ms)
+                split_date_str = str(split_date.date())
+
             if not res["ok"]:
-                print(f"  {split_label:12}  {str(split_date.date()):12}  "
+                print(f"  {split_label:12}  {split_date_str:25}  "
                       f"campione troppo piccolo (pre={res['n_pre']}, post={res['n_post']})")
                 continue
 
-            # Consensus: almeno 2 test su 4 rifiutano H0
+            # Consensus: conteggio flessibile (perm/HAC NaN con pre_2019)
+            perm_rej = (not np.isnan(res["perm_p"])) and res["perm_p"] < ALPHA
+            hac_rej  = (not np.isnan(res["hac_p"])) and res["hac_p"] < ALPHA
             n_rej = sum([
-                res["t_p"]     < ALPHA,
+                res["t_p"]      < ALPHA,
                 res["mw_p_one"] < ALPHA,
-                res["perm_p"]  < ALPHA,
-                (not np.isnan(res["hac_p"])) and res["hac_p"] < ALPHA,
+                perm_rej,
+                hac_rej,
             ])
-            consensus = "✓" if n_rej >= 2 else "–"
+            # Denominatore: per pre_2019 solo 2 test validi (Welch + MW)
+            n_valid = 2 if split_label == "pre_2019" else 4
+            consensus = "✓" if n_rej >= max(1, n_valid // 2) else "–"
 
-            print(f"  {split_label:12}  {str(split_date.date()):12}  "
+            perm_str = f"{res['perm_p']:7.4f}" if not np.isnan(res["perm_p"]) else "    N/A"
+            hac_str  = f"{res['hac_p']:7.4f}"  if not np.isnan(res["hac_p"])  else "    N/A"
+
+            print(f"  {split_label:12}  {split_date_str:25}  "
                   f"{res['delta_vs_bl']:+8.4f}  "
                   f"{res['t_p']:7.4f}  "
                   f"{res['mw_p_one']:7.4f}  "
-                  f"{res['perm_p']:7.4f}  "
-                  f"{res['hac_p'] if not np.isnan(res['hac_p']) else np.nan:7.4f}  "
-                  f"{'SÌ' if res['anomalo'] else 'no':4} {_stars(res['t_p'])} [{n_rej}/4 {consensus}]")
+                  f"{perm_str}  {hac_str}  "
+                  f"{'SÌ' if res['anomalo'] else 'no':4} {_stars(res['t_p'])} "
+                  f"[{n_rej}/{n_valid} {consensus}]")
 
             multi_split_results.append({
-                "Evento":      ev_name,
-                "Carburante":  fuel,
-                "preliminare": prelim,
-                "split_type":  split_label,
+                "Evento":        ev_name,
+                "Carburante":    fuel,
+                "preliminare":   prelim,
+                "split_type":    split_label,
                 **{k: v for k, v in res.items() if k != "ok"},
+                "n_tests_valid": n_valid,
                 "n_tests_reject": n_rej,
-                "consensus_2of4": n_rej >= 2,
+                "consensus_2of4": n_rej >= max(1, n_valid // 2),
             })
 
 df_ms = pd.DataFrame(multi_split_results)
@@ -1208,10 +1413,20 @@ if tau_lag_rows:
 print("\nScript 03 completato.")
 print("  H0 (nuova): μ_post = μ_2019  — one-sample t-test, one-sided upper.")
 print("  H1 (nuova): μ_post > μ_2019")
-print("  Test secondari (salto locale pre→post): Mann-Whitney, Block perm, HAC.")
-print("  Aggiunti: δ_pre_vs_baseline, pre_anomalo, τ_price, τ_margin per ogni serie.")
-print("  τ_lag: interpretazione anticipatorio/sincrono/reattivo del margine vs prezzo.")
-print("  Multi-split: analisi ripetuta su shock_hard, τ_price, τ_margin.")
-print("  Analisi annuale: media margine per anno + windfall netto proxy M€.")
+print("  MW migliorato: confronto post vs distribuzione 2019 (n~52 settimane).")
+print("    → allineato con H0 Welch; nessuna assunzione di adiacenza temporale.")
+print("    → mw_local (vs shock_hard pre) mantenuto nel CSV per confronto.")
+print("  Block perm / HAC: DOPPIA IMPLEMENTAZIONE:")
+print("    [PRINCIPALE]  split τ_price — esogeno al margine, pre window pulita.")
+print("      → entra nella BH correction come test confirmatory.")
+print("    [ROBUSTNESS]  split τ_margin — endogeno, isola la rottura del margine.")
+print("      → fuori dalla BH; check metodologico riportato nel CSV.")
+print("      → convergenza τ_price/τ_margin documentata in perm_split_convergence")
+print("         e hac_split_convergence: True = risultato robusto allo split.")
+print("  TENSIONE IRAN-ISRAELE: τ_margin precede τ_price di ~7gg.")
+print("    → Con split τ_price i 7gg di rottura del margine finiscono nel 'post'.")
+print("    → Effetto trascurabile in pratica; il robustness check lo verifica.")
+print("  Multi-split: shock_hard / tau_price / tau_margin / pre_2019 (4 split).")
+print("    → pre_2019: MW+Welch vs 2019; perm/HAC skippati (non adiacenti).")
 print("  Hormuz incluso come preliminare (escluso dalla BH correction).")
 print("  data/confirmatory_pvalues.csv -> input per 05_global_corrections.py")

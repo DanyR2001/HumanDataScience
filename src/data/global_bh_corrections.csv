@@ -1,25 +1,25 @@
 fonte,tipo,descrizione,p_value,BH_global_reject,p_value_BH_adjusted
-Welch_t_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,6.458494868641487e-05,True,0.000516679589491319
-MannWhitney_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,0.0078,True,0.031199999999999995
-BlockPerm_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,0.0141,True,0.04834285714285714
-HAC_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,0.0862,False,0.18807272727272728
-Welch_t_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.0007843074743411,True,0.0047058448460466
-MannWhitney_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.0049,True,0.02352
-BlockPerm_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.0349,False,0.1047
-HAC_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.0975,False,0.19499999999999998
-Welch_t_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,1.0304865041298688e-14,True,2.473167609911685e-13
-MannWhitney_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,0.7406,False,0.8464
-BlockPerm_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,0.7194,False,0.8464
-HAC_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,0.5259,False,0.6642947368421053
-Welch_t_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,8.126316081693859e-09,True,9.751579298032631e-08
-MannWhitney_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,0.9923,False,0.9922999999999998
-BlockPerm_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,0.923,False,0.9631304347826087
-HAC_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,0.0625,False,0.15
-DiD_Ucraina (Feb 2022)_Germania_Benzina,confirmatory,Ucraina (Feb 2022) | IT vs Germania | Benzina,0.4132039056649571,False,0.6026360982250029
-DiD_Ucraina (Feb 2022)_Germania_Diesel,confirmatory,Ucraina (Feb 2022) | IT vs Germania | Diesel,0.3036034081951964,False,0.4857654531123142
+Welch_t_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,6.458494868641487e-05,True,0.0002583397947456595
+MannWhitney_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,0.0001,True,0.0003428571428571429
+BlockPerm_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,0.1248,False,0.24959999999999996
+HAC_Ucraina (Feb 2022)_Benzina,confirmatory,Ucraina (Feb 2022) | Benzina,0.1782,False,0.3211429086888363
+Welch_t_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.0007843074743411,True,0.0023529224230233
+MannWhitney_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.0,True,0.0
+BlockPerm_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.3653,False,0.5157176470588236
+HAC_Ucraina (Feb 2022)_Diesel,confirmatory,Ucraina (Feb 2022) | Diesel,0.4957,False,0.5678570349805577
+Welch_t_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,1.0304865041298688e-14,True,6.182919024779212e-14
+MannWhitney_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,0.0,True,0.0
+BlockPerm_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,0.9132,False,0.952904347826087
+HAC_Iran-Israele (Giu 2025)_Benzina,confirmatory,Iran-Israele (Giu 2025) | Benzina,0.0666,False,0.14530909090909094
+Welch_t_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,8.126316081693859e-09,True,3.900631719213052e-08
+MannWhitney_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,0.0,True,0.0
+BlockPerm_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,0.9639,False,0.9639000000000001
+HAC_Iran-Israele (Giu 2025)_Diesel,confirmatory,Iran-Israele (Giu 2025) | Diesel,0.0422,False,0.11253333333333332
+DiD_Ucraina (Feb 2022)_Germania_Benzina,confirmatory,Ucraina (Feb 2022) | IT vs Germania | Benzina,0.4132039056649571,False,0.5392007194644762
+DiD_Ucraina (Feb 2022)_Germania_Diesel,confirmatory,Ucraina (Feb 2022) | IT vs Germania | Diesel,0.3036034081951964,False,0.45540511229279457
 DiD_Iran-Israele (Giu 2025)_Germania_Benzina,confirmatory,Iran-Israele (Giu 2025) | IT vs Germania | Benzina,0.8108502496141978,False,0.8845639086700339
-DiD_Iran-Israele (Giu 2025)_Germania_Diesel,confirmatory,Iran-Israele (Giu 2025) | IT vs Germania | Diesel,0.4268672362427104,False,0.6026360982250029
-DiD_Ucraina (Feb 2022)_Svezia_Benzina,confirmatory,Ucraina (Feb 2022) | IT vs Svezia | Benzina,0.4968749056079881,False,0.662499874143984
-DiD_Ucraina (Feb 2022)_Svezia_Diesel,confirmatory,Ucraina (Feb 2022) | IT vs Svezia | Diesel,0.0521820743588755,False,0.13915219829033465
-DiD_Iran-Israele (Giu 2025)_Svezia_Benzina,confirmatory,Iran-Israele (Giu 2025) | IT vs Svezia | Benzina,0.2007143179305227,False,0.34408168788089605
-DiD_Iran-Israele (Giu 2025)_Svezia_Diesel,confirmatory,Iran-Israele (Giu 2025) | IT vs Svezia | Diesel,0.1907801244208796,False,0.34408168788089605
+DiD_Iran-Israele (Giu 2025)_Germania_Diesel,confirmatory,Iran-Israele (Giu 2025) | IT vs Germania | Diesel,0.4268672362427104,False,0.5392007194644762
+DiD_Ucraina (Feb 2022)_Svezia_Benzina,confirmatory,Ucraina (Feb 2022) | IT vs Svezia | Benzina,0.4968749056079881,False,0.5678570349805577
+DiD_Ucraina (Feb 2022)_Svezia_Diesel,confirmatory,Ucraina (Feb 2022) | IT vs Svezia | Diesel,0.0521820743588755,False,0.1252369784613012
+DiD_Iran-Israele (Giu 2025)_Svezia_Benzina,confirmatory,Iran-Israele (Giu 2025) | IT vs Svezia | Benzina,0.2007143179305227,False,0.3211429086888363
+DiD_Iran-Israele (Giu 2025)_Svezia_Diesel,confirmatory,Iran-Israele (Giu 2025) | IT vs Svezia | Diesel,0.1907801244208796,False,0.3211429086888363

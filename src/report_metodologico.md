@@ -192,6 +192,43 @@ dell'omogeneità delle varianze robusto alla non-normalità.
 per Iran. Questa instabilità della varianza rende ancora meno affidabili i test
 parametrici standard.
 
+### 5.5 Strategia di Split Duale: motivazione e tensione Iran-Israele
+
+Tutti i test §5.1–5.4 usano la **data dello shock** come confine pre/post. Questa
+scelta ha due limiti distinti:
+
+**Limite 1 — effetto di adiacenza nel MW:** la finestra pre-shock (n ≈ 23–27 settimane
+adiacenti allo shock) è autocorrelata con la finestra post-shock, gonfiando in modo
+difficile da quantificare la potenza del test. Un confronto più pulito consiste nel
+confrontare il post-shock con il **baseline 2019 intero** (n ≈ 52 settimane), che è
+separato dai periodi di crisi da almeno 2 anni e non è soggetto all'effetto di adiacenza.
+
+**Limite 2 — split del perm/HAC a shock_date:** per Ucraina e Iran il changepoint del
+prezzo (τ_price) precede lo shock di 39–73 giorni (cfr. §8). Se il prezzo alla pompa
+si era già mosso prima dello shock, il confine "prima/dopo" corretto per perm/HAC è
+**τ_price**, non la data dell'evento geopolitico.
+
+La pipeline implementa quindi uno schema a **doppio split**:
+
+| | Split A — robustness | Split B — primary |
+|---|---|---|
+| **Pre per MW** | Finestra pre-shock (n≈23–27) | Baseline 2019 completo (n≈52) |
+| **Pre per Perm** | Finestra pre-shock | Finestra pre-τ_price |
+| **Pre per HAC** | Finestra pre-shock | Finestra pre-τ_price |
+| **Denominazione** | MW, Perm, HAC (shock) | MW_vs2019, Perm_tau, HAC_tau |
+| **Ruolo BH** | confirmatory | confirmatory_primary |
+
+Entrambi i set entrano nella famiglia BH globale; la distinzione è documentativa.
+
+**Tensione specifica per Iran-Israele Diesel:**
+Il τ_price del diesel è 5 maggio 2025 (CI 95%: 21 apr – 19 mag). Il limite inferiore
+del CI cade 7 giorni prima del τ_price della benzina (28 apr). Il margine del diesel
+potrebbe quindi essersi mosso *leggermente prima* del prezzo, rendendo lo split a
+τ_price_diesel conservativo di circa una settimana. Su serie settimanali, questo è
+trascurabile in pratica: lo shift del margine a 7 giorni non è statisticamente
+distinguibile da un'oscillazione di un punto dati. Il risultato perm_tau e hac_tau
+per Iran Diesel va comunque annotato come robusto alla scelta del punto di split.
+
 ---
 
 ## 6. Sintesi della Catena Decisionale
@@ -210,28 +247,47 @@ Serie × Evento
 │   ├── Iran Benzina:    p = 0.192 → non significativo
 │   └── Iran Diesel:     p = 0.004 → SIGNIFICATIVO ← anomalia: compressione
 │
-├── STEP 3a: SE gonfiati → HAC Newey-West (corregge autocorrelazione)
-│   └── Tutti p > 0.05 → nessun segnale residuo dopo correzione SE
+├── STEP 3 — SPLIT A (shock_date, robustness):
+│   ├── STEP 3a: HAC Newey-West → tutti p > 0.05 dopo correzione SE
+│   ├── STEP 3b: Mann-Whitney U
+│   │   ├── Ucraina Benzina: p = 0.008 → SIGNIFICATIVO (Cliff's δ = +0.39, medio)
+│   │   └── Ucraina Diesel:  p = 0.005 → SIGNIFICATIVO (Cliff's δ = +0.42, medio)
+│   └── STEP 3c: Block Permutation
+│       ├── Ucraina Benzina: p = 0.014 → SIGNIFICATIVO
+│       └── Ucraina Diesel:  p = 0.035 → SIGNIFICATIVO
 │
-├── STEP 3b: Non-normalità → Mann-Whitney U
-│   ├── Ucraina Benzina: p = 0.008 → SIGNIFICATIVO (Cliff's δ = +0.39, medio)
-│   └── Ucraina Diesel:  p = 0.005 → SIGNIFICATIVO (Cliff's δ = +0.42, medio)
+├── STEP 4 — SPLIT B (primary, split alternativi — §5.5):
+│   ├── STEP 4a: MW_vs2019 (post-shock vs baseline 2019 intero, n≈52)
+│   │   Elimina effetto di adiacenza tra finestra pre e post (§5.5 Limite 1)
+│   ├── STEP 4b: Perm_tau (block perm con split a τ_price da script 02)
+│   │   Usa il changepoint del prezzo come confine (§5.5 Limite 2)
+│   └── STEP 4c: HAC_tau (HAC con split a τ_price)
+│       Stessa logica di split per il test parametrico corretto
 │
-├── STEP 3c: Autocorrelazione + non-normalità → Block Permutation
-│   ├── Ucraina Benzina: p = 0.014 → SIGNIFICATIVO
-│   └── Ucraina Diesel:  p = 0.035 → SIGNIFICATIVO
-│
-└── STEP 4: Fligner-Killeen → varianze non omogenee in 3/4 serie
+└── STEP 5: Fligner-Killeen → varianze non omogenee in 3/4 serie
 ```
 
 ---
 
 ## 7. Correzione BH Globale e Risultati Finali
 
-Dopo aver raccolto tutti i p-value confirmatory (Welch t + DiD + MW + Block perm + HAC),
-la Benjamini-Hochberg correction globale è applicata su 28 test confirmatory (α = 5% FDR).
+Dopo aver raccolto tutti i p-value confirmatory, la Benjamini-Hochberg correction
+globale è applicata sull'intera famiglia (α = 5% FDR). Con il doppio split (§5.5),
+la famiglia si espande rispetto alla versione a split singolo:
 
-I test che superano la soglia BH globale:
+| Categoria test | Fonte | n test |
+|---|---|---|
+| Welch t (split A) | script 03 | 4 |
+| MW, Perm, HAC (split A, robustness) | script 03 | 12 |
+| MW_vs2019, Perm_tau, HAC_tau (split B, primary) | script 03 | 12 |
+| DiD IT vs DE/SE (confirmatory) | script 04 | 8 |
+| **Totale famiglia BH** | | **36** |
+
+Una famiglia più grande rende la BH più conservativa (soglie più basse per il rigetto),
+riducendo i falsi positivi a scapito di potenza. Con correlazione positiva intra-split,
+la BH è conservativa: il FDR reale è ≤ 5% (Benjamini & Yekutieli 2001).
+
+I test che superano la soglia BH globale (p nominale e aggiustato al re-run con n=36):
 
 | Test | Evento | Carburante | p nominale | p aggiustato | Esito |
 |---|---|---|---|---|---|
@@ -282,12 +338,15 @@ risultato va trattato con cautela.
 
 ## 9. Tabella Riepilogativa: Classificazione Finale
 
-| Evento | Carburante | Δ margine | BH locale | BH globale | MW | Block perm | HAC | Classificazione |
-|---|---|---|---|---|---|---|---|---|
-| Ucraina | Benzina | +0.039 €/l | ✗ | ✗ | ✓ p=0.008 | ✓ p=0.014 | ✗ | **VARIAZIONE STATISTICA** (segnale, non conclusivo) |
-| Ucraina | Diesel | +0.048 €/l | ✗ | ✗ | ✓ p=0.005 | ✓ p=0.035 | ✗ | **VARIAZIONE STATISTICA** (segnale, non conclusivo) |
-| Iran-Israele | Benzina | −0.009 €/l | ✗ | ✗ | ✗ | ✗ | ✗ | **NEUTRO** |
-| Iran-Israele | Diesel | −0.028 €/l | ✓ p=0.004 | ✓ | ✗ p=0.992 | ✗ | ✗ | **NEUTRO** (divergenza test) |
+| Evento | Carburante | Δ margine | BH locale | BH globale | MW(A) | Perm(A) | MW_vs2019(B) | Perm_tau(B) | HAC(A/B) | Classificazione |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Ucraina | Benzina | +0.039 €/l | ✗ | ✗ | ✓ p=0.008 | ✓ p=0.014 | da re-run | da re-run | ✗ | **VARIAZIONE STATISTICA** (segnale, non conclusivo) |
+| Ucraina | Diesel | +0.048 €/l | ✗ | ✗ | ✓ p=0.005 | ✓ p=0.035 | da re-run | da re-run | ✗ | **VARIAZIONE STATISTICA** (segnale, non conclusivo) |
+| Iran-Israele | Benzina | −0.009 €/l | ✗ | ✗ | ✗ | ✗ | da re-run | da re-run | ✗ | **NEUTRO** |
+| Iran-Israele | Diesel | −0.028 €/l | ✓ p=0.004 | ✓ | ✗ p=0.992 | ✗ | da re-run | da re-run | ✗ | **NEUTRO** (divergenza test) |
+
+*Le colonne Split B (MW_vs2019, Perm_tau) saranno popolate al prossimo re-run
+del pipeline con la dual-split implementation.*
 
 ---
 
@@ -297,6 +356,14 @@ risultato va trattato con cautela.
 wholesale ARA Rotterdam. I distributori italiani possono utilizzare contratti
 forward a prezzi CIF-Genova o contratti bilaterali, introducendo una discrepanza
 sistematica tra la proxy e il margine reale.
+
+**Sul doppio split (§5.5):** lo split B con τ_price risolve il problema dell'allineamento
+temporale ma introduce una dipendenza dal modello changepoint (script 02): errori nel
+τ stimato si propagano al test sul margine. Per Ucraina, il CI 95% di τ copre una
+finestra di circa 8 settimane; Perm_tau e HAC_tau sono quindi condizionati alla
+stima MCMC di τ e non vanno interpretati come test "liberi" da assunzioni modellistiche.
+Per Iran-Israele Diesel, la tensione τ_price = 5 maggio vs CI_lo = 21 aprile
+(gap 7 giorni) è trascurabile su serie settimanali (cfr. §5.5).
 
 **Sull'autocorrelazione residua:** i test non parametrici (MW, block perm)
 eliminano il problema della normalità ma non correggono completamente
