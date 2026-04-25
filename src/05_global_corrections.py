@@ -140,13 +140,30 @@ t2_path = "data/table2_margin_anomaly.csv"
 if os.path.exists(t2_path):
     df_t2    = pd.read_csv(t2_path)
     df_welch = df_all[df_all["fonte"].str.startswith("Welch_t")].reset_index(drop=True)
-    if len(df_welch) == len(df_t2):
-        df_t2["BH_global_reject"]       = df_welch["BH_global_reject"].values
-        df_t2["t_p_BH_global_adjusted"] = df_welch["p_value_BH_adjusted"].values
-        df_t2.to_csv(t2_path, index=False)
-        print(f"  Aggiornato: {t2_path} (colonne BH_global_reject, t_p_BH_global_adjusted)")
+
+    # Hormuz è escluso dalla BH (dati preliminari) → Welch_t ha 4 righe,
+    # table2 ne ha 6 (3 eventi × 2 carburanti).
+    # Uniamo solo sulle righe non-preliminari, usando l'ordine posizionale
+    # (entrambe le fonti seguono lo stesso ordinamento evento × carburante).
+    prel_col = "preliminare" if "preliminare" in df_t2.columns else None
+    if prel_col:
+        nonprel_idx = df_t2[~df_t2[prel_col].astype(bool)].index
     else:
-        print(f"  Mismatch table2 ({len(df_t2)}) vs Welch_t ({len(df_welch)}) — non aggiornato")
+        nonprel_idx = df_t2.index   # fallback: aggiorna tutto
+
+    if len(df_welch) == len(nonprel_idx):
+        df_t2.loc[nonprel_idx, "BH_global_reject"]       = df_welch["BH_global_reject"].values
+        df_t2.loc[nonprel_idx, "t_p_BH_global_adjusted"] = df_welch["p_value_BH_adjusted"].values
+        # Hormuz: segna esplicitamente come non incluso nella BH globale
+        prel_rows = df_t2[df_t2[prel_col].astype(bool)].index if prel_col else []
+        df_t2.loc[prel_rows, "BH_global_reject"]       = pd.NA
+        df_t2.loc[prel_rows, "t_p_BH_global_adjusted"] = pd.NA
+        df_t2.to_csv(t2_path, index=False)
+        print(f"  Aggiornato: {t2_path}")
+        print(f"    Non-prelim: {len(nonprel_idx)} righe aggiornate con BH globale")
+        print(f"    Preliminari (Hormuz): {len(df_t2) - len(nonprel_idx)} righe → BH_global_reject = NA")
+    else:
+        print(f"  Mismatch table2 non-prelim ({len(nonprel_idx)}) vs Welch_t ({len(df_welch)}) — non aggiornato")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

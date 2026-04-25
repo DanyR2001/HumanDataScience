@@ -58,6 +58,20 @@ warnings.filterwarnings("ignore")
 os.makedirs("data",  exist_ok=True)
 os.makedirs("plots", exist_ok=True)
 
+# ── Carica τ_margin da table2 se disponibile (prodotto da script 03)
+# Script 02 gira prima di 03, ma se la pipeline è rieseguita table2 esiste già.
+TAU_MARGIN_MAP = {}   # (ev_name, fuel_name) -> pd.Timestamp
+_t2_path = "data/table2_margin_anomaly.csv"
+if os.path.exists(_t2_path):
+    _df_t2 = pd.read_csv(_t2_path)
+    for _, _r in _df_t2.iterrows():
+        if pd.notna(_r.get("tau_margin")) and str(_r["tau_margin"]) not in ("N/A","nan",""):
+            TAU_MARGIN_MAP[(_r["Evento"], _r["Carburante"])] = pd.Timestamp(_r["tau_margin"])
+    print(f"τ_margin caricati da table2 (run precedente): {len(TAU_MARGIN_MAP)} entry")
+else:
+    print("table2_margin_anomaly.csv non trovato — τ_margin non disponibile nei plot 02")
+    print("(sarà aggiunto ai plot alla prossima esecuzione della pipeline completa)")
+
 DPI         = 180
 ALPHA       = 0.05
 LAG_THRESH  = 30   # giorni: |D| < 30gg = trasmissione rapida
@@ -329,6 +343,14 @@ for ev_name, cfg in EVENTS.items():
                    label=f"CI 95%: {cp_lo.strftime('%d %b %y')} – {cp_hi.strftime('%d %b %y')}")
         ax.axvline(shock, color=ev_color, lw=1.8, ls=":",
                    label=f"Shock {cfg['shock']}")
+
+        # τ_margin (da script 03, run precedente) — se disponibile
+        _tm = TAU_MARGIN_MAP.get((ev_name, ser_name))
+        if _tm is not None and df_ev.index[0] <= _tm <= df_ev.index[-1]:
+            ax.axvline(_tm, color=ev_color, lw=1.6, ls=(0,(3,1,1,1)),
+                       alpha=0.75, label=f"τ_margin={_tm.strftime('%d %b %y')}")
+            axk.axvline(_tm, color=ev_color, lw=1.6, ls=(0,(3,1,1,1)), alpha=0.75)
+
         ax.set_title(
             f"{ev_name} — {ser_name}   |   D={lag_days:+d}gg   "
             f"DT1={round(dt1,0) if dt1!=np.inf else 'inf'}gg -> "

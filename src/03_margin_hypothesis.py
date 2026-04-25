@@ -1,8 +1,43 @@
 """
-03_margin_hypothesis.py  (fix: Hormuz aggiunto, unità EUR/L corrette)
+03_margin_hypothesis.py  (v2: H0 riformulata, changepoint margine, grafici aggiornati)
 ========================
-Il margine lordo dei distributori italiani e' aumentato anomalmente
-rispetto al baseline 2019 dopo gli shock energetici?
+
+IPOTESI NULLA E ALTERNATIVA (revisione)
+-----------------------------------------
+La H0 precedente confrontava la finestra pre-shock con quella post-shock
+(two-sample), testando se ci fosse un salto locale intorno all'evento.
+Il limite è che se il margine era già elevato nella finestra pre-shock
+(coerente con D = −46/−73 giorni dei changepoint sui prezzi) il delta
+locale risulta piccolo anche se il margine post-shock è ben sopra il 2019.
+
+  H0 (nuova):  Il margine lordo medio nel periodo post-shock è
+               statisticamente indistinguibile dal livello medio 2019.
+               μ_post = μ_baseline_2019
+
+  H1 (nuova):  Il margine lordo medio nel periodo post-shock è
+               significativamente superiore al livello medio 2019.
+               μ_post > μ_baseline_2019   (one-sided, upper tail)
+
+  Test primario:  one-sample Welch t (ttest_1samp vs μ_2019, one-sided)
+  Test secondari: Mann-Whitney, Block perm, HAC — mantengono il confronto
+                  pre-window vs post-window per misurare il salto locale.
+
+ANALISI PRE-SHOCK
+------------------
+Poiché i changepoint sui log-prezzi anticipano lo shock di 46–73 giorni,
+testiamo anche la finestra pre-shock vs baseline 2019:
+  - δ_pre = mean(pre_window) − μ_2019
+  - pre_anomalo = δ_pre > 2σ_2019
+  Se TRUE, il margine era già elevato prima dello shock → coerente con
+  anticipazione di mercato, non con speculazione post-evento.
+
+CHANGEPOINT SUL MARGINE
+------------------------
+Per ogni evento × carburante calcoliamo anche τ_margin = data in cui il
+margine ha subito la sua rottura strutturale più netta (argmax del t di
+Welch su tutte le possibili partizioni). Viene confrontato con τ_price
+(proveniente da script 02, tabella 1) per vedere se il margine si è
+rotto prima o dopo il prezzo.
 
 NOTA HORMUZ: i dati post-shock Hormuz (feb 2026) coprono solo ~7-8 settimane
 al momento dell'analisi. I risultati sono preliminari e da non citare come
@@ -11,12 +46,13 @@ conclusivi nella relazione; vengono inclusi per completezza della pipeline.
 Input:
   data/dataset_merged_with_futures.csv
   data/regression_diagnostics.csv
+  data/table1_changepoints.csv          <- prodotto da 02_changepoint.py
 
 Output:
   data/table2_margin_anomaly.csv
   data/confirmatory_pvalues.csv
   data/baseline_sensitivity.csv
-  plots/03_margins.png
+  plots/03_margins.png                  <- ora include τ_price e τ_margin
   plots/03_delta_summary.png
 """
 
@@ -174,6 +210,83 @@ def _stars(p):
     return "***" if p<0.001 else "**" if p<0.01 else "*" if p<0.05 else "n.s."
 
 
+def run_tests_at_split(margin_series: pd.Series,
+                       split_date: pd.Timestamp,
+                       mu_2019: float,
+                       soglia: float,
+                       rng_perm) -> dict:
+    """
+    Esegue la batteria completa (Welch 1-sample, MW, block perm, HAC)
+    con la finestra pre/post definita da split_date.
+    Restituisce un dict con i risultati principali.
+    """
+    idx = int(np.clip(margin_series.index.searchsorted(split_date),
+                      2, len(margin_series) - 2))
+    pre  = margin_series.iloc[:idx].values
+    post = margin_series.iloc[idx:].values
+    if len(pre) < 4 or len(post) < 4:
+        return {"ok": False, "n_pre": len(pre), "n_post": len(post)}
+
+    # H0: μ_post = μ_2019   H1: μ_post > μ_2019  (one-sample, one-sided upper)
+    t_s, t_p = stats.ttest_1samp(post, popmean=mu_2019, alternative="greater")
+    delta_vs_bl = float(post.mean() - mu_2019)
+    delta_local = float(post.mean() - pre.mean())
+
+    # Pre vs baseline
+    _, t_p_pre = stats.ttest_1samp(pre, popmean=mu_2019, alternative="greater")
+    delta_pre_bl = float(pre.mean() - mu_2019)
+
+    mw       = mann_whitney_full(pre, post)
+    obs_perm, p_perm = perm_test(pre, post, rng=rng_perm)
+    hac      = hac_test(pre, post)
+
+    return {
+        "ok":           True,
+        "n_pre":        len(pre),
+        "n_post":       len(post),
+        "split_date":   split_date.strftime("%Y-%m-%d"),
+        "delta_vs_bl":  round(delta_vs_bl, 5),
+        "delta_local":  round(delta_local, 5),
+        "delta_pre_bl": round(delta_pre_bl, 5),
+        "pre_anomalo":  delta_pre_bl > soglia,
+        "anomalo":      delta_vs_bl > soglia,
+        "t_stat":       round(float(t_s), 4),
+        "t_p":          round(float(t_p), 4),
+        "t_p_pre":      round(float(t_p_pre), 4),
+        "mw_p_one":     mw["p_one"],
+        "mw_cliff":     mw["cliffs_delta"],
+        "mw_hl":        mw["hodges_lehmann"],
+        "perm_p":       round(p_perm, 4),
+        "perm_delta":   round(obs_perm, 5),
+        "hac_p":        hac["hac_p"],
+        "hac_delta":    hac["delta_hac"],
+    }
+
+def margin_changepoint_date(series_vals: np.ndarray,
+                            series_idx: pd.DatetimeIndex,
+                            min_frac: float = 0.25) -> tuple:
+    """
+    Stima τ_margin = data del changepoint strutturale sul margine.
+    Metodo: argmax del |t di Welch| su tutte le possibili partizioni
+    (Bai-Perron single-break, brute force). Restituisce (date, t_stat).
+    La ricerca esclude il primo e l'ultimo min_frac della serie per evitare
+    changepoint ai bordi con campioni troppo piccoli.
+    """
+    n = len(series_vals)
+    if n < 8:
+        return None, np.nan
+    best_t, best_k = 0.0, n // 2
+    min_n = max(4, int(n * min_frac))
+    for k in range(min_n, n - min_n):
+        pre_k, post_k = series_vals[:k], series_vals[k:]
+        if len(pre_k) < 4 or len(post_k) < 4:
+            continue
+        t_k, _ = stats.ttest_ind(pre_k, post_k, equal_var=False)
+        if abs(t_k) > abs(best_t):
+            best_t, best_k = t_k, k
+    return series_idx[best_k], best_t
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Leggi diagnostici da script 02
 # ─────────────────────────────────────────────────────────────────────────────
@@ -196,6 +309,22 @@ if os.path.exists(diag_path):
     print()
 else:
     print("regression_diagnostics.csv non trovato — eseguire prima 02_changepoint.py\n")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Carica τ_price da script 02 (changepoint sui log-prezzi)
+# Mappa: (ev_name, fuel_name) -> Timestamp
+# ─────────────────────────────────────────────────────────────────────────────
+tau_price_map = {}
+t1_path = "data/table1_changepoints.csv"
+if os.path.exists(t1_path):
+    df_t1 = pd.read_csv(t1_path)
+    # Le serie "Benzina" e "Diesel" in table1 corrispondono ai margini
+    for _, r in df_t1.iterrows():
+        if r["Serie"] in ("Benzina", "Diesel"):
+            tau_price_map[(r["Evento"], r["Serie"])] = pd.Timestamp(r["tau"])
+    print(f"τ_price caricati da table1_changepoints.csv: {len(tau_price_map)} entry")
+else:
+    print("table1_changepoints.csv non trovato — τ_price non disponibile")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -225,11 +354,13 @@ for raw_col, eur_l_col in [("benzina_4w","benzina_eur_l"),("diesel_4w","diesel_e
 # ─────────────────────────────────────────────────────────────────────────────
 baseline   = merged.loc[BASELINE_START:BASELINE_END]
 thresholds = {}
+baseline_mu = {}   # μ_2019 per fuel — usato nella H0 one-sample
 for fuel, col in MARGIN_COLS.items():
     if col in baseline.columns:
         vals = baseline[col].dropna()
-        thresholds[fuel] = float(2 * vals.std()) if len(vals) >= 4 else 0.030
-        print(f"Baseline 2019 | {fuel}: mu={vals.mean():.5f}  "
+        thresholds[fuel]  = float(2 * vals.std()) if len(vals) >= 4 else 0.030
+        baseline_mu[fuel] = float(vals.mean())    if len(vals) >= 4 else 0.0
+        print(f"Baseline 2019 | {fuel}: mu={baseline_mu[fuel]:.5f}  "
               f"sigma={vals.std():.5f}  soglia 2sigma={thresholds[fuel]:.5f} EUR/L")
 
 # Sensitivity baseline
@@ -285,22 +416,86 @@ for ev_name, cfg in EVENTS.items():
             print(f"  {fuel}: campioni troppo piccoli (pre={len(pre_m)}, post={len(post_m)}) — skip")
             continue
 
-        # 1. Welch t-test
-        t_stat, t_p = stats.ttest_ind(post_m, pre_m, equal_var=False)
-        delta_mean  = float(post_m.mean() - pre_m.mean())
+        mu_2019  = baseline_mu.get(fuel, 0.0)
+        soglia   = thresholds.get(fuel, 0.030)
+
+        # ── H0 (nuova): one-sample t-test post vs μ_2019, one-sided upper ──
+        # H0: μ_post = μ_2019   H1: μ_post > μ_2019
+        t_stat, t_p = stats.ttest_1samp(post_m, popmean=mu_2019, alternative="greater")
+        delta_vs_baseline = float(post_m.mean() - mu_2019)   # δ principale
+        delta_mean        = float(post_m.mean() - pre_m.mean())  # salto locale (ausiliario)
         boot_m, b_lo, b_hi = bootstrap_ci(pre_m, post_m)
 
-        # 2. Mann-Whitney
+        # δ finestra pre-shock vs baseline (era già elevato prima dello shock?)
+        t_pre, t_p_pre = stats.ttest_1samp(pre_m, popmean=mu_2019, alternative="greater")
+        delta_pre_vs_baseline = float(pre_m.mean() - mu_2019)
+        pre_anomalo = delta_pre_vs_baseline > soglia
+
+        # ── Anomalia flagging ora su δ vs baseline 2019 ──────────────────
+        anomalo = delta_vs_baseline > soglia   # positiva, supera 2σ_2019
+
+        # ── τ_margin: changepoint strutturale sul margine ─────────────────
+        df_margin_full = merged.loc[cfg["pre_start"]:cfg["post_end"]].dropna(subset=[margin_col])
+        tau_margin_date, tau_margin_t = margin_changepoint_date(
+            df_margin_full[margin_col].values,
+            df_margin_full.index
+        )
+        tau_price_date = tau_price_map.get((ev_name, fuel), None)
+
+        # ── τ_lag = τ_margin − τ_price ────────────────────────────────────
+        # Interpretazione:
+        #   lag < −7gg  → ANTICIPATORIO: il margine si rompe PRIMA del wholesale
+        #                  Pattern incompatibile con semplice cost pass-through;
+        #                  coerente con pricing anticipatorio / speculativo.
+        #   −7 ≤ lag ≤ 14 → SINCRONO: rottura contestuale
+        #                  I distributori espandono il margine NON appena
+        #                  il costo wholesale si muove, ma insieme ad esso.
+        #   lag > 14gg  → REATTIVO: il margine si adatta dopo il prezzo
+        #                  Coerente con trasmissione graduale dei costi.
+        if tau_margin_date is not None and tau_price_date is not None:
+            lag_tau_days = int((tau_margin_date - tau_price_date).days)
+            if lag_tau_days < -7:
+                tau_lag_interp = (
+                    f"ANTICIPATORIO (lag={lag_tau_days:+d}gg): τ_margin precede τ_price — "
+                    "margine si espande PRIMA dello shock wholesale"
+                )
+            elif lag_tau_days <= 14:
+                tau_lag_interp = (
+                    f"SINCRONO (lag={lag_tau_days:+d}gg): τ_margin e τ_price coincidono — "
+                    "espansione margine contestuale al movimento di prezzo"
+                )
+            else:
+                tau_lag_interp = (
+                    f"REATTIVO (lag={lag_tau_days:+d}gg): τ_margin segue τ_price — "
+                    "coerente con trasmissione graduale dei costi (cost pass-through)"
+                )
+        else:
+            lag_tau_days = None
+            tau_lag_interp = "N/A (un τ non disponibile)"
+
+        # ── Margine integrato in eccesso sopra μ_2019 (proxy windfall) ───
+        # Calcolato sull'intero window evento (pre_start → post_end).
+        # Unità: EUR/L × settimane.  Per convertire in €M moltiplicare per
+        # volume_settimana_L / 1e6 (volume proxy: MISE 2022).
+        _VOLUME_L_WEEK = {"Benzina": 182_000_000, "Diesel": 596_000_000}
+        excess_series      = df_margin_full[margin_col] - mu_2019
+        integrated_pos     = float(excess_series.clip(lower=0).sum())   # Σ settimane sopra baseline
+        integrated_neg     = float((-excess_series).clip(lower=0).sum())# Σ settimane sotto baseline
+        integrated_net     = float(excess_series.sum())                  # netto (pos−neg)
+        vol_week           = _VOLUME_L_WEEK.get(fuel, 0)
+        windfall_meur_pos  = integrated_pos  * vol_week / 1e6
+        windfall_meur_net  = integrated_net  * vol_week / 1e6
+        n_weeks_above      = int((excess_series > 0).sum())
+        n_weeks_below      = int((excess_series < 0).sum())
+
+        # ── 2. Mann-Whitney (pre vs post — salto locale) ──────────────────
         mw = mann_whitney_full(pre_m, post_m)
 
-        # 3. Block permutation
+        # ── 3. Block permutation ──────────────────────────────────────────
         obs_perm, p_perm = perm_test(pre_m, post_m, rng=rng_perm)
 
-        # 4. HAC
+        # ── 4. HAC ───────────────────────────────────────────────────────
         hac = hac_test(pre_m, post_m)
-
-        soglia  = thresholds.get(fuel, 0.030)
-        anomalo = abs(delta_mean) > soglia
 
         stat_sig = t_p < ALPHA
         if stat_sig and anomalo and delta_mean > 0:
@@ -324,11 +519,17 @@ for ev_name, cfg in EVENTS.items():
         print(f"\n  {fuel}")
         print(f"    n pre={len(pre_m)}  n post={len(post_m)}"
               + (" [DATI LIMITATI]" if prelim else ""))
-        print(f"    delta_mean = {delta_mean:+.5f} EUR/L  "
+        print(f"    μ_2019={mu_2019:+.5f}  soglia 2σ={soglia:.5f}")
+        print(f"    δ_post_vs_baseline = {delta_vs_baseline:+.5f} EUR/L  "
+              f"(anomalo: {anomalo})")
+        print(f"    δ_pre_vs_baseline  = {delta_pre_vs_baseline:+.5f} EUR/L  "
+              f"(pre già elevato: {pre_anomalo})")
+        print(f"    δ_locale (post−pre) = {delta_mean:+.5f} EUR/L  "
               f"[boot CI: {b_lo:+.5f}, {b_hi:+.5f}]")
-        print(f"    soglia 2sigma = {soglia:.5f}  |  delta anomalo: {anomalo}")
-        print(f"    Welch t: t={t_stat:.3f}  p={t_p:.4f} {_stars(t_p)}")
-        print(f"    Mann-Whitney: AUC={mw['AUC']:.3f}  "
+        print(f"    Welch t (1-sample vs μ_2019, one-sided): "
+              f"t={t_stat:.3f}  p={t_p:.4f} {_stars(t_p)}")
+        print(f"    Welch t pre vs baseline: t={t_pre:.3f}  p={t_p_pre:.4f} {_stars(t_p_pre)}")
+        print(f"    Mann-Whitney (pre vs post): AUC={mw['AUC']:.3f}  "
               f"p(one)={mw['p_one']:.4f} {_stars(mw['p_one'])}  "
               f"HL={mw['hodges_lehmann']:+.5f}  Cliff={mw['cliffs_delta']:+.3f} "
               f"[{mw['magnitude']}]")
@@ -336,6 +537,17 @@ for ev_name, cfg in EVENTS.items():
               f"p={p_perm:.4f} {_stars(p_perm)}")
         print(f"    HAC: delta={hac['delta_hac']:+.5f}  "
               f"p={hac['hac_p']} {_stars(hac['hac_p']) if not np.isnan(hac['hac_p']) else ''}")
+        tp_str  = tau_price_date.strftime("%Y-%m-%d") if tau_price_date else "N/A"
+        tm_str  = tau_margin_date.strftime("%Y-%m-%d") if tau_margin_date is not None else "N/A"
+        print(f"    τ_price  = {tp_str}  |  τ_margin = {tm_str}  "
+              f"(t={tau_margin_t:+.2f})")
+        print(f"    τ_lag: {tau_lag_interp}")
+        print(f"    Windfall window {cfg['pre_start'].date()}→{cfg['post_end'].date()}: "
+              f"settimane sopra baseline={n_weeks_above}/{len(df_margin_full)}  "
+              f"integrato_pos={integrated_pos:.3f} EUR/L·sett "
+              f"(≈ {windfall_meur_pos:.0f} M€ lordi, volume proxy MISE 2022)")
+        print(f"    Windfall netto (pos−neg) = {integrated_net:+.3f} EUR/L·sett "
+              f"(≈ {windfall_meur_net:+.0f} M€)")
         print(f"    Classificazione: {clas}")
         if prelim:
             print(f"    NOTA: risultato PRELIMINARE — solo {len(post_m)} settimane post-shock")
@@ -343,26 +555,49 @@ for ev_name, cfg in EVENTS.items():
             print(f"    {divergence}")
 
         row = {
-            "Evento":             ev_name,
-            "Carburante":         fuel,
-            "preliminare":        prelim,
-            "n_pre":              len(pre_m),
-            "n_post":             len(post_m),
-            "delta_mean_eur":     round(delta_mean, 5),
-            "boot_CI_lo":         round(b_lo, 5),
-            "boot_CI_hi":         round(b_hi, 5),
-            "soglia_2sigma":      round(soglia, 5),
-            "delta_anomalo":      anomalo,
-            "t_stat":             round(float(t_stat), 4),
-            "t_p":                round(float(t_p), 4),
-            "t_H0":               "RIFIUTATA" if stat_sig else "non rifiutata",
+            "Evento":                  ev_name,
+            "Carburante":              fuel,
+            "preliminare":             prelim,
+            "n_pre":                   len(pre_m),
+            "n_post":                  len(post_m),
+            # ── H0 nuova: post vs baseline 2019 ──────────────────────────
+            "mu_baseline_2019":        round(mu_2019, 5),
+            "soglia_2sigma":           round(soglia, 5),
+            "delta_vs_baseline":       round(delta_vs_baseline, 5),
+            "delta_anomalo_vs_bl":     anomalo,
+            # ── Pre-shock vs baseline ─────────────────────────────────────
+            "delta_pre_vs_baseline":   round(delta_pre_vs_baseline, 5),
+            "pre_anomalo":             pre_anomalo,
+            "t_pre_p":                 round(float(t_p_pre), 4),
+            # ── Salto locale post−pre (ausiliario) ────────────────────────
+            "delta_mean_eur":          round(delta_mean, 5),
+            "boot_CI_lo":              round(b_lo, 5),
+            "boot_CI_hi":              round(b_hi, 5),
+            # ── τ changepoint ─────────────────────────────────────────────
+            "tau_price":               tp_str,
+            "tau_margin":              tm_str,
+            "tau_margin_t_stat":       round(float(tau_margin_t), 3),
+            "lag_tau_days":            lag_tau_days,
+            "tau_lag_interpretation":  tau_lag_interp,
+            # ── Windfall proxy ────────────────────────────────────────────
+            "n_weeks_event_window":    len(df_margin_full),
+            "n_weeks_above_baseline":  n_weeks_above,
+            "n_weeks_below_baseline":  n_weeks_below,
+            "integrated_excess_EurL_weeks": round(integrated_pos, 4),
+            "integrated_net_EurL_weeks":    round(integrated_net, 4),
+            "windfall_gross_meur":     round(windfall_meur_pos, 1),
+            "windfall_net_meur":       round(windfall_meur_net, 1),
+            # ── Test primario (one-sample vs μ_2019) ─────────────────────
+            "t_stat":                  round(float(t_stat), 4),
+            "t_p":                     round(float(t_p), 4),
+            "t_H0":                    "RIFIUTATA" if stat_sig else "non rifiutata",
             **{f"mw_{k}": v for k,v in mw.items()},
-            "perm_delta_med":     round(obs_perm, 5),
-            "perm_p":             round(p_perm, 4),
-            "perm_H0":            "RIFIUTATA" if p_perm < ALPHA else "non rifiutata",
+            "perm_delta_med":          round(obs_perm, 5),
+            "perm_p":                  round(p_perm, 4),
+            "perm_H0":                 "RIFIUTATA" if p_perm < ALPHA else "non rifiutata",
             **{f"hac_{k}": v for k,v in hac.items()},
-            "classificazione":    clas,
-            "divergenza_t_mw":    divergence,
+            "classificazione":         clas,
+            "divergenza_t_mw":         divergence,
         }
         results.append(row)
 
@@ -386,9 +621,195 @@ for ev_name, cfg in EVENTS.items():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BH correction locale (sui test primari Welch t)
+# ANALISI MULTI-SPLIT
+# Per ogni evento × carburante rieseguiamo la batteria di test usando tre
+# punti di split alternativi:
+#   shock_hard  — data geopolitica hardcodata (analisi primaria sopra)
+#   tau_price   — changepoint sul log-prezzo (da script 02 / table1)
+#   tau_margin  — changepoint strutturale sul margine (calcolato qui sopra)
 # ─────────────────────────────────────────────────────────────────────────────
+print("\n" + "="*65)
+print("ANALISI MULTI-SPLIT (shock_hard / tau_price / tau_margin)")
+print("="*65)
+
+multi_split_results = []
+rng_ms = np.random.default_rng(SEED + 1)   # seed separato per riproducibilità
+
+for ev_name, cfg in EVENTS.items():
+    prelim = cfg.get("preliminare", False)
+    prelim_note = " [PREL.]" if prelim else ""
+
+    for fuel, margin_col in MARGIN_COLS.items():
+        if margin_col not in merged.columns:
+            continue
+
+        # Serie di margine per questo evento
+        df_ev_full = merged.loc[cfg["pre_start"]:cfg["post_end"]].dropna(subset=[margin_col])
+        if len(df_ev_full) < 8:
+            continue
+
+        margin_series = df_ev_full[margin_col]
+        mu_2019  = baseline_mu.get(fuel, 0.0)
+        soglia   = thresholds.get(fuel, 0.030)
+
+        # Recupera tau_price e tau_margin dai risultati già calcolati
+        prim_row = next((r for r in results
+                         if r["Evento"] == ev_name and r["Carburante"] == fuel), None)
+        tau_price_date  = tau_price_map.get((ev_name, fuel))
+        tau_margin_date = (pd.Timestamp(prim_row["tau_margin"])
+                           if prim_row and prim_row["tau_margin"] not in ("N/A", None, "")
+                           else None)
+
+        splits = {
+            "shock_hard":  cfg["shock"],
+            "tau_price":   tau_price_date,
+            "tau_margin":  tau_margin_date,
+        }
+
+        print(f"\n  {ev_name}{prelim_note} — {fuel}")
+        print(f"  {'Split':12}  {'split_date':12}  {'δ_bl':>8}  "
+              f"{'t_p':>7}  {'mw_p':>7}  {'perm_p':>7}  {'hac_p':>7}  {'anomalo'}")
+        print("  " + "-"*78)
+
+        for split_label, split_date in splits.items():
+            if split_date is None:
+                print(f"  {split_label:12}  {'N/A':12}  — split non disponibile")
+                continue
+
+            res = run_tests_at_split(margin_series, split_date,
+                                     mu_2019, soglia, rng_ms)
+            if not res["ok"]:
+                print(f"  {split_label:12}  {str(split_date.date()):12}  "
+                      f"campione troppo piccolo (pre={res['n_pre']}, post={res['n_post']})")
+                continue
+
+            # Consensus: almeno 2 test su 4 rifiutano H0
+            n_rej = sum([
+                res["t_p"]     < ALPHA,
+                res["mw_p_one"] < ALPHA,
+                res["perm_p"]  < ALPHA,
+                (not np.isnan(res["hac_p"])) and res["hac_p"] < ALPHA,
+            ])
+            consensus = "✓" if n_rej >= 2 else "–"
+
+            print(f"  {split_label:12}  {str(split_date.date()):12}  "
+                  f"{res['delta_vs_bl']:+8.4f}  "
+                  f"{res['t_p']:7.4f}  "
+                  f"{res['mw_p_one']:7.4f}  "
+                  f"{res['perm_p']:7.4f}  "
+                  f"{res['hac_p'] if not np.isnan(res['hac_p']) else np.nan:7.4f}  "
+                  f"{'SÌ' if res['anomalo'] else 'no':4} {_stars(res['t_p'])} [{n_rej}/4 {consensus}]")
+
+            multi_split_results.append({
+                "Evento":      ev_name,
+                "Carburante":  fuel,
+                "preliminare": prelim,
+                "split_type":  split_label,
+                **{k: v for k, v in res.items() if k != "ok"},
+                "n_tests_reject": n_rej,
+                "consensus_2of4": n_rej >= 2,
+            })
+
+df_ms = pd.DataFrame(multi_split_results)
+if not df_ms.empty:
+    df_ms.to_csv("data/table2_multi_split.csv", index=False)
+    print(f"\nSalvato: data/table2_multi_split.csv ({len(df_ms)} righe)")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ANALISI ANNUALE — "alla fine dell'anno hanno guadagnato uguale?"
+# Per ogni anno solare 2019–2026 confrontiamo la distribuzione del margine
+# lordo con il 2019 baseline usando Mann-Whitney (non parametrico) e
+# calcoliamo il margine integrato annuale in eccesso (proxy windfall annuo).
+# ─────────────────────────────────────────────────────────────────────────────
+print("\n" + "="*65)
+print("ANALISI ANNUALE DEI MARGINI (confronto vs baseline 2019)")
+print("="*65)
+
+annual_rows = []
+_VOLUME_L_WEEK = {"Benzina": 182_000_000, "Diesel": 596_000_000}
+
+for fuel, margin_col in MARGIN_COLS.items():
+    if margin_col not in merged.columns:
+        continue
+
+    mu_2019 = baseline_mu.get(fuel, 0.0)
+    soglia  = thresholds.get(fuel, 0.030)
+    vol_week = _VOLUME_L_WEEK.get(fuel, 0)
+
+    # Baseline 2019: distribuzione di riferimento
+    bl_vals = merged.loc[BASELINE_START:BASELINE_END, margin_col].dropna().values
+
+    print(f"\n  {fuel}  |  μ_2019 = {mu_2019:.5f} EUR/L  soglia 2σ = {soglia:.5f}")
+    print(f"  {'Anno':6}  {'n':>4}  {'media':>8}  {'mediana':>8}  "
+          f"{'δ_vs_2019':>10}  {'MW_p':>8}  {'anomalo':>8}  "
+          f"{'sett>bl':>7}  {'windfall_netto_meur':>20}")
+    print("  " + "-"*95)
+
+    years = sorted(merged.index.year.unique())
+    for yr in years:
+        yr_data = merged.loc[str(yr), margin_col].dropna()
+        if len(yr_data) < 4:
+            continue
+        yr_vals = yr_data.values
+
+        # Mann-Whitney vs baseline 2019 (non parametrico)
+        _, mw_p = mannwhitneyu(yr_vals, bl_vals, alternative="greater")
+
+        mean_yr   = float(yr_vals.mean())
+        med_yr    = float(np.median(yr_vals))
+        delta_yr  = mean_yr - mu_2019
+        anomalo_yr = delta_yr > soglia
+
+        # Windfall integrato annuo
+        excess_yr    = yr_data - mu_2019
+        integrated_n = float(excess_yr.sum())
+        windfall_n   = integrated_n * vol_week / 1e6
+        n_above      = int((excess_yr > 0).sum())
+
+        print(f"  {yr:<6}  {len(yr_vals):>4}  {mean_yr:>8.5f}  {med_yr:>8.5f}  "
+              f"{delta_yr:>+10.5f}  {mw_p:>8.4f}  "
+              f"{'SÌ' if anomalo_yr else 'no':>8}  "
+              f"{n_above:>4}/{len(yr_vals):<3}  "
+              f"{windfall_n:>+20.1f}")
+
+        annual_rows.append({
+            "anno":             yr,
+            "carburante":       fuel,
+            "n_settimane":      len(yr_vals),
+            "media_eur_l":      round(mean_yr, 5),
+            "mediana_eur_l":    round(med_yr, 5),
+            "delta_vs_2019":    round(delta_yr, 5),
+            "anomalo_2sigma":   anomalo_yr,
+            "mw_p_vs_2019":     round(float(mw_p), 4),
+            "n_settimane_sopra_baseline": n_above,
+            "integrated_excess_EurL_weeks": round(float(excess_yr.clip(lower=0).sum()), 4),
+            "integrated_net_EurL_weeks":    round(integrated_n, 4),
+            "windfall_net_meur":            round(windfall_n, 1),
+            "volume_proxy_source":          "MISE 2022 (~9.5 Mld L/anno benz, ~31 Mld L/anno diesel)",
+        })
+
+df_annual = pd.DataFrame(annual_rows)
+if not df_annual.empty:
+    df_annual.to_csv("data/annual_margin_analysis.csv", index=False)
+    print(f"\n  Salvato: data/annual_margin_analysis.csv")
+
+    # Nota interpretativa
+    print("""
+  Nota: "windfall_net_meur" è la somma algebrica di tutte le settimane
+  dell'anno (positive e negative) moltiplicata per il volume proxy.
+  Un valore elevato positivo significa che la media annua di margine
+  è rimasta sopra il 2019 anche pesando i periodi di compressione.
+  Questo risponde a "hanno guadagnato uguale alla fine dell'anno?":
+  se windfall_net > 0 per un anno di crisi, la risposta è NO —
+  hanno guadagnato PIÙ del normale anche su base annua.
+  Nota: volume proxy approssimativo; per stime precise usare dati MISE/ENAC.
+""")
+
+
+
 df_res = pd.DataFrame(results)
+
 if not df_res.empty:
     # BH solo sui non-preliminari
     df_nonprel = df_res[~df_res["preliminare"]]
@@ -401,7 +822,7 @@ if not df_res.empty:
 
     def _reclassify(row):
         if pd.isna(row.get("BH_reject_local")) or not row["BH_reject_local"]:
-            return "Neutro / trasmissione attesa" if not row["delta_anomalo"] \
+            return "Neutro / trasmissione attesa" if not row["delta_anomalo_vs_bl"] \
                    else "Variazione statistica"
         return row["classificazione"]
     df_res["classificazione_BH"] = df_res.apply(_reclassify, axis=1)
@@ -417,8 +838,23 @@ print(f"Salvato: data/confirmatory_pvalues.csv ({len(conf_pvalues)} test)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Plot 1: margini nel tempo con banda baseline
+# Plot 1: margini nel tempo con banda baseline + τ_price e τ_margin
 # ─────────────────────────────────────────────────────────────────────────────
+# Costruiamo lookup: (ev_name, fuel) -> (tau_price, tau_margin)
+tau_lookup = {}
+for r in results:
+    tp = pd.Timestamp(r["tau_price"])  if r["tau_price"]  != "N/A" else None
+    tm = pd.Timestamp(r["tau_margin"]) if r["tau_margin"] != "N/A" else None
+    tau_lookup[(r["Evento"], r["Carburante"])] = (tp, tm)
+
+# Colori degli eventi per le linee di shock (già definito in WAR_DATES)
+EV_COLOR = {ev: clr for ev, (_, clr) in WAR_DATES.items()}
+EV_NAME_SHORT = {
+    "Ucraina (Feb 2022)":    "Ucraina",
+    "Iran-Israele (Giu 2025)": "Iran",
+    "Hormuz (Feb 2026)":     "Hormuz",
+}
+
 def _war_lines(ax, y_top):
     for label, (dt, color) in WAR_DATES.items():
         if merged.index[0] <= dt <= merged.index[-1]:
@@ -426,8 +862,13 @@ def _war_lines(ax, y_top):
             ax.text(dt + pd.Timedelta(days=5), y_top*0.96,
                     label, rotation=90, fontsize=8, color=color, va="top")
 
-fig_m, axes_m = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+fig_m, axes_m = plt.subplots(2, 1, figsize=(14, 9), sharex=True)
 baseline_data  = merged.loc[BASELINE_START:BASELINE_END]
+
+# τ linestyle per tipo
+LS_PRICE  = "-."   # τ_price (log-prezzo, da script 02)
+LS_MARGIN = ":"    # τ_margin (margine, calcolato qui)
+LW_TAU    = 1.6
 
 for ax, (fuel, col), color in zip(
     axes_m,
@@ -435,26 +876,68 @@ for ax, (fuel, col), color in zip(
     ["#e67e22","#8e44ad"]
 ):
     if col not in merged.columns: continue
-    s = merged[col].dropna()
-    ax.plot(s.index, s.values, color=color, lw=1.8, label=fuel)
+    s  = merged[col].dropna()
     bl = baseline_data[col].dropna()
+    ax.plot(s.index, s.values, color=color, lw=1.8, label=fuel)
     if len(bl) >= 4:
         ax.axhspan(bl.mean()-2*bl.std(), bl.mean()+2*bl.std(),
                    alpha=0.12, color="#888", label="Baseline ±2σ (2019)")
         ax.axhline(bl.mean(), color="#888", lw=1.0, ls="--")
+        ax.text(merged.index[5], bl.mean(),
+                f"μ₂₀₁₉: {bl.mean():.3f} EUR/L", fontsize=8, color="#555")
+
     _war_lines(ax, s.max())
+
+    # ── τ_price e τ_margin per ogni evento ──────────────────────────────
+    for ev_name_full, cfg in EVENTS.items():
+        ev_short = EV_NAME_SHORT.get(ev_name_full, ev_name_full[:6])
+        ev_color = [c for lbl, (_, c) in WAR_DATES.items()
+                    if ev_name_full.startswith(lbl)][0] if any(
+                    ev_name_full.startswith(lbl) for lbl in WAR_DATES) else "#555"
+        # recupera colore dall'evento
+        for lbl, (_, c) in WAR_DATES.items():
+            if ev_name_full.startswith(lbl):
+                ev_color = c
+                break
+
+        tp, tm = tau_lookup.get((ev_name_full, fuel), (None, None))
+
+        if tp is not None and merged.index[0] <= tp <= merged.index[-1]:
+            ax.axvline(tp, color=ev_color, lw=LW_TAU, ls=LS_PRICE, alpha=0.80)
+            ax.text(tp - pd.Timedelta(days=12), s.quantile(0.92),
+                    f"τ_p\n{ev_short}", rotation=90, fontsize=7,
+                    color=ev_color, va="top", alpha=0.85)
+
+        if tm is not None and merged.index[0] <= tm <= merged.index[-1]:
+            ax.axvline(tm, color=ev_color, lw=LW_TAU, ls=LS_MARGIN, alpha=0.80)
+            ax.text(tm + pd.Timedelta(days=4), s.quantile(0.85),
+                    f"τ_m\n{ev_short}", rotation=90, fontsize=7,
+                    color=ev_color, va="top", alpha=0.85)
+
     ax.set_ylabel("Margine lordo (EUR/litro)", fontsize=10)
     ax.set_title(f"Margine crack spread — {fuel}", fontsize=11, fontweight="bold")
-    ax.legend(fontsize=9); ax.grid(alpha=0.3)
-    # Annotazione range atteso
-    ax.text(merged.index[5], bl.mean() if len(bl) >= 4 else s.mean(),
-            f"media 2019: {bl.mean():.3f} EUR/L" if len(bl) >= 4 else "",
-            fontsize=8, color="#555")
+
+    # Legenda manuale compatta
+    from matplotlib.lines import Line2D
+    legend_handles = [
+        mpatches.Patch(color=color, label=fuel, alpha=0.8),
+        mpatches.Patch(color="#888", label="Baseline ±2σ (2019)", alpha=0.4),
+        Line2D([0],[0], color="#555", lw=LW_TAU, ls=LS_PRICE,  label="τ_price (da script 02)"),
+        Line2D([0],[0], color="#555", lw=LW_TAU, ls=LS_MARGIN, label="τ_margin (strutturale)"),
+    ]
+    ax.legend(handles=legend_handles, fontsize=8, loc="upper left")
+    ax.grid(alpha=0.3)
 
 axes_m[-1].xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
 axes_m[-1].xaxis.set_major_locator(mdates.MonthLocator(interval=3))
 plt.xticks(rotation=40, fontsize=9)
-plt.tight_layout()
+fig_m.suptitle(
+    "Margine lordo crack spread — H₀: μ_post = μ₂₀₁₉\n"
+    "τ_price (-.): changepoint log-prezzi (script 02)  |  "
+    "τ_margin (:): changepoint strutturale sul margine",
+    fontsize=10, fontweight="bold"
+)
+plt.tight_layout(rect=[0,0,1,0.96])
 fig_m.savefig("plots/03_margins.png", dpi=DPI, bbox_inches="tight")
 plt.close(fig_m)
 print("Salvato: plots/03_margins.png")
@@ -503,7 +986,232 @@ if not df_res.empty:
     print("Salvato: plots/03_delta_summary.png")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Plot 3: confronto tre split per ogni evento × carburante
+# ─────────────────────────────────────────────────────────────────────────────
+if not df_ms.empty:
+    SPLIT_COLORS = {
+        "shock_hard":  "#2c3e50",   # grigio scuro
+        "tau_price":   "#2980b9",   # blu
+        "tau_margin":  "#e67e22",   # arancione
+    }
+    SPLIT_LABELS = {
+        "shock_hard": "Data shock\n(hardcoded)",
+        "tau_price":  "τ_price\n(log-prezzo)",
+        "tau_margin": "τ_margin\n(margine)",
+    }
+
+    # Raggruppa per evento × carburante
+    groups = df_ms.groupby(["Evento", "Carburante"])
+    n_groups = len(groups)
+    fig_sp, axes_sp = plt.subplots(
+        n_groups, 1,
+        figsize=(14, max(5, n_groups * 2.8)),
+        squeeze=False
+    )
+
+    for ax_idx, ((ev, fuel), grp) in enumerate(groups):
+        ax = axes_sp[ax_idx, 0]
+        prelim = grp["preliminare"].iloc[0]
+
+        splits_present = grp["split_type"].unique()
+        x_pos = np.arange(len(splits_present))
+        bar_w = 0.55
+
+        for xi, spl in enumerate(splits_present):
+            row = grp[grp["split_type"] == spl].iloc[0]
+            color = SPLIT_COLORS.get(spl, "#888")
+            delta = row["delta_vs_bl"]
+            ax.bar(xi, delta, width=bar_w, color=color, alpha=0.80,
+                   edgecolor="black", lw=0.8,
+                   label=SPLIT_LABELS.get(spl, spl))
+
+            # Asterischi sopra le barre
+            stars = _stars(row["t_p"])
+            ax.text(xi, delta + (0.002 if delta >= 0 else -0.004),
+                    stars, ha="center", va="bottom" if delta >= 0 else "top",
+                    fontsize=10, fontweight="bold")
+
+            # Box info sotto barra: n_pre/post e consensus
+            info = f"pre={row['n_pre']} post={row['n_post']}\n{int(row['n_tests_reject'])}/4 test"
+            ax.text(xi, min(delta, 0) - (ax.get_ylim()[1]-ax.get_ylim()[0])*0.04 if ax.get_ylim()[1] != ax.get_ylim()[0] else -0.004,
+                    info, ha="center", va="top", fontsize=7, color="#555")
+
+        ax.axhline(0, color="black", lw=0.8)
+        # banda ±2σ baseline
+        soglia_f = thresholds.get(fuel, 0.030)
+        ax.axhspan(-soglia_f, soglia_f, alpha=0.08, color="#888",
+                   label="±2σ baseline 2019")
+
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(
+            [SPLIT_LABELS.get(s, s) for s in splits_present],
+            fontsize=9
+        )
+        ax.set_ylabel("δ vs μ₂₀₁₉ (EUR/L)", fontsize=9)
+        title = f"{ev.split('(')[0].strip()} — {fuel}"
+        if prelim:
+            title += "  ⚠ PRELIMINARE"
+        ax.set_title(title, fontsize=10, fontweight="bold")
+        ax.grid(alpha=0.25, axis="y")
+        ax.legend(fontsize=7, loc="upper right")
+
+    fig_sp.suptitle(
+        "Confronto pre/post su tre split point — H₀: μ_post = μ₂₀₁₉\n"
+        "★ = p<0.05  ★★ = p<0.01  ★★★ = p<0.001  (Welch 1-sample, one-sided)",
+        fontsize=10, fontweight="bold"
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+    fig_sp.savefig("plots/03_split_comparison.png", dpi=DPI, bbox_inches="tight")
+    plt.close(fig_sp)
+    print("Salvato: plots/03_split_comparison.png")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plot 4: Analisi annuale — media margine per anno + windfall netto
+# ─────────────────────────────────────────────────────────────────────────────
+if not df_annual.empty:
+    fuels_plot = df_annual["carburante"].unique()
+    fig_ann, axes_ann = plt.subplots(
+        len(fuels_plot), 2,
+        figsize=(15, 4 * len(fuels_plot)),
+        squeeze=False
+    )
+    FUEL_COLOR = {"Benzina": "#e67e22", "Diesel": "#8e44ad"}
+
+    for fi, fuel_p in enumerate(fuels_plot):
+        sub = df_annual[df_annual["carburante"] == fuel_p].sort_values("anno")
+        mu_bl = baseline_mu.get(fuel_p, 0.0)
+        soglia_p = thresholds.get(fuel_p, 0.030)
+        fc = FUEL_COLOR.get(fuel_p, "#555")
+
+        # Subplot sinistra: media annua vs baseline
+        ax_l = axes_ann[fi, 0]
+        years_a = sub["anno"].values
+        means_a = sub["media_eur_l"].values
+        colors_bar = [
+            "#c0392b" if d > soglia_p else "#27ae60" if d < -soglia_p else "#888"
+            for d in sub["delta_vs_2019"].values
+        ]
+        ax_l.bar(years_a, means_a, color=colors_bar, alpha=0.80,
+                 edgecolor="black", lw=0.7, width=0.65)
+        ax_l.axhline(mu_bl, color="#2c3e50", lw=2.0, ls="--",
+                     label=f"μ₂₀₁₉ = {mu_bl:.4f}")
+        ax_l.axhspan(mu_bl - soglia_p, mu_bl + soglia_p,
+                     alpha=0.08, color="#888", label="±2σ baseline 2019")
+
+        # Asterischi MW
+        for yr_i, (yr_v, mw_pv, mean_v) in enumerate(
+                zip(sub["anno"], sub["mw_p_vs_2019"], sub["media_eur_l"])):
+            stars = _stars(float(mw_pv))
+            if stars != "n.s.":
+                ax_l.text(yr_v, mean_v + 0.002, stars,
+                          ha="center", fontsize=9, fontweight="bold", color="#c0392b")
+
+        ax_l.set_ylabel("Margine lordo medio (EUR/L)", fontsize=9)
+        ax_l.set_title(f"{fuel_p} — Media annua vs μ₂₀₁₉ (★ = MW p<0.05)", fontsize=10)
+        ax_l.legend(fontsize=8)
+        ax_l.grid(alpha=0.25, axis="y")
+        ax_l.set_xticks(years_a)
+        ax_l.tick_params(axis="x", labelsize=9)
+
+        # Subplot destra: windfall netto annuo in M€
+        ax_r = axes_ann[fi, 1]
+        wf_vals = sub["windfall_net_meur"].values
+        wf_colors = ["#c0392b" if v > 0 else "#2980b9" for v in wf_vals]
+        ax_r.bar(years_a, wf_vals, color=wf_colors, alpha=0.80,
+                 edgecolor="black", lw=0.7, width=0.65)
+        ax_r.axhline(0, color="black", lw=0.8)
+        ax_r.set_ylabel("Windfall netto annuo (M€, proxy)", fontsize=9)
+        ax_r.set_title(
+            f"{fuel_p} — Extramargine annuo vs 2019 in M€\n"
+            "(rosso=sopra baseline; blu=sotto; volume proxy MISE 2022)",
+            fontsize=9
+        )
+        ax_r.grid(alpha=0.25, axis="y")
+        ax_r.set_xticks(years_a)
+        ax_r.tick_params(axis="x", labelsize=9)
+
+        # Etichette valori
+        for yr_v, wv in zip(years_a, wf_vals):
+            ax_r.text(yr_v, wv + (15 if wv >= 0 else -20), f"{wv:+.0f}",
+                      ha="center", fontsize=8, fontweight="bold",
+                      color="#c0392b" if wv > 0 else "#2980b9")
+
+    fig_ann.suptitle(
+        "Analisi annuale margini — H₀: 'alla fine dell'anno hanno guadagnato uguale?'\n"
+        "Rosso = anno sopra soglia 2σ baseline 2019  |  Windfall = Σ (margin_t − μ₂₀₁₉) × volume",
+        fontsize=10, fontweight="bold"
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    fig_ann.savefig("plots/03_annual_margins.png", dpi=DPI, bbox_inches="tight")
+    plt.close(fig_ann)
+    print("Salvato: plots/03_annual_margins.png")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plot 5: τ_lag heatmap — relazione tra τ_price e τ_margin per ogni evento
+# ─────────────────────────────────────────────────────────────────────────────
+tau_lag_rows = [
+    r for r in results
+    if r.get("lag_tau_days") is not None and r["tau_margin"] != "N/A"
+]
+if tau_lag_rows:
+    fig_tl, ax_tl = plt.subplots(figsize=(10, max(3, len(tau_lag_rows)*0.7)))
+
+    labels_tl = [f"{r['Evento'].split('(')[0].strip()} {r['Carburante']}"
+                 + (" ⚠" if r["preliminare"] else "")
+                 for r in tau_lag_rows]
+    lags       = [r["lag_tau_days"] for r in tau_lag_rows]
+    bar_colors = [
+        "#c0392b" if lg < -7 else "#e67e22" if lg <= 14 else "#27ae60"
+        for lg in lags
+    ]
+
+    ax_tl.barh(range(len(lags)), lags, color=bar_colors, alpha=0.82,
+               edgecolor="black", lw=0.7, height=0.55)
+    ax_tl.axvline(-7, color="#c0392b", lw=1.2, ls=":", alpha=0.7,
+                  label="Soglia ANTICIPATORIO (< −7gg)")
+    ax_tl.axvline(14, color="#27ae60", lw=1.2, ls=":", alpha=0.7,
+                  label="Soglia REATTIVO (> +14gg)")
+    ax_tl.axvline(0, color="black", lw=0.8)
+    ax_tl.axvspan(-200, -7, alpha=0.04, color="#c0392b")   # zona anticipatoria
+    ax_tl.axvspan(14, 200, alpha=0.04, color="#27ae60")    # zona reattiva
+
+    for i, (lg, row) in enumerate(zip(lags, tau_lag_rows)):
+        interp_short = (
+            "ANTICIP." if lg < -7 else
+            "SINCRONO" if lg <= 14 else "REATTIVO"
+        )
+        ax_tl.text(lg + (3 if lg >= 0 else -3), i,
+                   f"{lg:+d}gg  {interp_short}",
+                   va="center", ha="left" if lg >= 0 else "right",
+                   fontsize=8, color="black")
+
+    ax_tl.set_yticks(range(len(lags)))
+    ax_tl.set_yticklabels(labels_tl, fontsize=9)
+    ax_tl.set_xlabel("lag_tau = τ_margin − τ_price (giorni)", fontsize=10)
+    ax_tl.set_title(
+        "Relazione temporale τ_margin vs τ_price\n"
+        "Rosso = margine si rompe PRIMA del wholesale (ANTICIPATORIO — segnale speculativo)\n"
+        "Arancio = sincrono  |  Verde = margine segue il prezzo (REATTIVO — cost pass-through)",
+        fontsize=9, fontweight="bold"
+    )
+    ax_tl.legend(fontsize=8, loc="lower right")
+    ax_tl.grid(alpha=0.25, axis="x")
+    plt.tight_layout()
+    fig_tl.savefig("plots/03_tau_lag.png", dpi=DPI, bbox_inches="tight")
+    plt.close(fig_tl)
+    print("Salvato: plots/03_tau_lag.png")
+
+
 print("\nScript 03 completato.")
-print("  H0 testata con Welch t + Mann-Whitney + Block perm + HAC.")
+print("  H0 (nuova): μ_post = μ_2019  — one-sample t-test, one-sided upper.")
+print("  H1 (nuova): μ_post > μ_2019")
+print("  Test secondari (salto locale pre→post): Mann-Whitney, Block perm, HAC.")
+print("  Aggiunti: δ_pre_vs_baseline, pre_anomalo, τ_price, τ_margin per ogni serie.")
+print("  τ_lag: interpretazione anticipatorio/sincrono/reattivo del margine vs prezzo.")
+print("  Multi-split: analisi ripetuta su shock_hard, τ_price, τ_margin.")
+print("  Analisi annuale: media margine per anno + windfall netto proxy M€.")
 print("  Hormuz incluso come preliminare (escluso dalla BH correction).")
 print("  data/confirmatory_pvalues.csv -> input per 05_global_corrections.py")
