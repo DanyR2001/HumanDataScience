@@ -196,15 +196,100 @@ def bayesian_changepoint(x: np.ndarray, y: np.ndarray, cfg: dict) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# [FIX critic.1] Confronto AIC: Student-T vs Skew-Normal sui residui OLS
+# ─────────────────────────────────────────────────────────────────────────────
+def distribution_aic_comparison(resid: np.ndarray) -> dict:
+    """
+    Confronta via AIC la distribuzione Student-T e la Skew-Normal MLE
+    sui residui OLS piecewise.
+
+    Motivazione: la critica metodologica (27-apr-2026) suggerisce di
+    verificare se la Skewed-T si adatti meglio della Student-T al changepoint
+    MCMC. Prima di passare a una likelihood più complessa (che aumenta il
+    rischio di non-convergenza), si valuta l'asimmetria dei residui empirici
+    tramite MLE sulla distribuzione marginalizzata.
+
+    Se ΔAIC = AIC(SkewNorm) − AIC(StudentT) < −2 → SkewNormal preferita:
+    raccomandare cambio likelihood nel modello MCMC.
+
+    Student-T:   3 parametri liberi (df, loc, scale)
+    SkewNormal:  3 parametri liberi (alpha=skewness, loc, scale)
+    → stesso numero di parametri → AIC = BIC a meno della costante log(n).
+
+    Rif: Akaike (1974) IEEE Trans. Autom. Control;
+         Burnham & Anderson (2002) Model Selection and Multimodel Inference.
+    """
+    r = np.asarray(resid, dtype=float)
+    r = r[np.isfinite(r)]
+    n = len(r)
+
+    # ── Student-t MLE ─────────────────────────────────────────────────────
+    aic_t = np.nan
+    try:
+        params_t = stats.t.fit(r)           # (df, loc, scale)
+        ll_t     = float(np.sum(stats.t.logpdf(r, *params_t)))
+        aic_t    = -2.0 * ll_t + 2.0 * 3   # k = 3
+    except Exception:
+        pass
+
+    # ── SkewNormal MLE ────────────────────────────────────────────────────
+    aic_sn = np.nan
+    alpha_sn = np.nan
+    try:
+        params_sn = stats.skewnorm.fit(r)   # (a, loc, scale)
+        ll_sn     = float(np.sum(stats.skewnorm.logpdf(r, *params_sn)))
+        aic_sn    = -2.0 * ll_sn + 2.0 * 3
+        alpha_sn  = float(params_sn[0])     # skewness parameter
+    except Exception:
+        pass
+
+    delta_aic = float(aic_sn - aic_t) if (np.isfinite(aic_sn) and np.isfinite(aic_t)) else np.nan
+
+    # ── Skewness empirica (test di Fisher) ────────────────────────────────
+    skew_emp, skew_p = np.nan, np.nan
+    try:
+        skew_emp = float(stats.skew(r))
+        if n >= 8:
+            skew_p = float(stats.skewtest(r).pvalue)
+    except Exception:
+        pass
+
+    # ── Raccomandazione ───────────────────────────────────────────────────
+    use_skewed = False
+    if np.isfinite(delta_aic):
+        if delta_aic < -2.0:
+            rec = (f"⚠  ΔAIC={delta_aic:.1f}: SkewNormal migliore di {abs(delta_aic):.1f} AIC. "
+                   f"α_skew={alpha_sn:.3f}. Considerare Skewed-T nel MCMC.")
+            use_skewed = True
+        elif delta_aic > 2.0:
+            rec = f"✓  ΔAIC={delta_aic:.1f}: Student-T adeguato (SkewNormal peggiore)."
+        else:
+            rec = f"~  ΔAIC={delta_aic:.1f}: modelli equivalenti (|ΔAIC| ≤ 2). Student-T sufficiente."
+    else:
+        rec = "ΔAIC non disponibile (fit MLE fallito)"
+
+    return {
+        "AIC_StudentT":         round(float(aic_t), 2) if np.isfinite(aic_t) else None,
+        "AIC_SkewNormal":       round(float(aic_sn), 2) if np.isfinite(aic_sn) else None,
+        "delta_AIC_Skew_T":     round(delta_aic, 2) if np.isfinite(delta_aic) else None,
+        "alpha_SkewNorm":       round(alpha_sn, 3) if np.isfinite(alpha_sn) else None,
+        "skewness_empirica":    round(skew_emp, 3) if np.isfinite(skew_emp) else None,
+        "skewtest_p":           round(skew_p, 4) if np.isfinite(skew_p) else None,
+        "use_skewed_t":         use_skewed,
+        "raccomandazione_dist": rec,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Diagnostici OLS piecewise (motivano la scelta dei test in script 03)
 # ─────────────────────────────────────────────────────────────────────────────
 def ols_diagnostics(x: np.ndarray, y: np.ndarray, cp_idx: int) -> dict:
     """
-    Calcola Breusch-Pagan, Shapiro-Wilk e Durbin-Watson sui residui OLS
-    piecewise. Il risultato viene salvato in regression_diagnostics.csv
+    Calcola Breusch-Pagan, Shapiro-Wilk, Durbin-Watson e confronto AIC
+    distribuzionale (StudentT vs SkewNormal) sui residui OLS piecewise.
+    Il risultato viene salvato in regression_diagnostics.csv
     e letto da 03_margin_hypothesis.py per scegliere i test appropriati.
     """
-    n    = len(x)
     cp   = cp_idx
     s1, i1, _, *_ = stats.linregress(x[:cp], y[:cp])
     s2, _,  _, *_ = stats.linregress(x[cp:], y[cp:])
@@ -222,8 +307,11 @@ def ols_diagnostics(x: np.ndarray, y: np.ndarray, cp_idx: int) -> dict:
         sw_p = np.nan
     dw = durbin_watson(resid)
 
+    # [FIX critic.1] Confronto AIC distribuzionale
+    aic_info = distribution_aic_comparison(resid)
+
     return {"BP_p": bp_p, "SW_p": sw_p, "DW": dw,
-            "resid": resid, "y_hat": y_hat}
+            "resid": resid, "y_hat": y_hat, **aic_info}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -285,7 +373,18 @@ for ev_name, cfg in EVENTS.items():
             "BP_p": round(float(diag["BP_p"]),4) if not np.isnan(diag["BP_p"]) else None,
             "SW_p": round(float(diag["SW_p"]),4) if not np.isnan(diag["SW_p"]) else None,
             "DW":   round(diag["DW"],3),
+            # [FIX critic.1] AIC confronto distribuzionale
+            "AIC_StudentT":       diag.get("AIC_StudentT"),
+            "AIC_SkewNormal":     diag.get("AIC_SkewNormal"),
+            "delta_AIC_Skew_T":   diag.get("delta_AIC_Skew_T"),
+            "alpha_SkewNorm":     diag.get("alpha_SkewNorm"),
+            "skewness_empirica":  diag.get("skewness_empirica"),
+            "skewtest_p":         diag.get("skewtest_p"),
+            "use_skewed_t":       diag.get("use_skewed_t", False),
+            "dist_raccomandazione": diag.get("raccomandazione_dist", ""),
         })
+        # Stampa raccomandazione distribuzionale
+        print(f"  Distr. AIC: {diag.get('raccomandazione_dist', 'N/A')}")
 
         rhat_flag = ("CONVERGENZA DUBBIA" if ci["rhat_max"] > 1.05
                      else "ok" if not np.isnan(ci["rhat_max"]) else "N/A")

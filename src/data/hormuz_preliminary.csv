@@ -1,0 +1,3 @@
+Evento,Carburante,n_settimane_post,delta_vs_2019,delta_pre_post,std_2019,z_score_vs_2019,tau_margin_descrittivo,flag_preliminare,flag_in_BH,nota
+Hormuz (Feb 2026),Benzina,11,0.10446,0.0167,0.01886,5.538,2026-03-23,True,False,PRELIMINARE: solo 12 settimane post-shock. Nessun p-value in BH globale. Stime altamente instabili — da aggiornare quando n ≥ 20 settimane.
+Hormuz (Feb 2026),Diesel,11,0.01549,-0.0524,0.01834,0.845,2026-04-06,True,False,PRELIMINARE: solo 12 settimane post-shock. Nessun p-value in BH globale. Stime altamente instabili — da aggiornare quando n ≥ 20 settimane.

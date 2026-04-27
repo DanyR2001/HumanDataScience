@@ -1,0 +1,13 @@
+evento,carburante,split_type,neff_post,rho_post,neff_pre,rho_pre,neff_combined,rho_combined,hac_maxlags_andrews,neff_flag
+Ucraina (Feb 2022),Benzina,shock_hard,4.8,0.7,7.0,0.564,10.1,0.675,24,CAUTELA: n_eff=4.8 < 5 — test non informativo
+Ucraina (Feb 2022),Benzina,tau_price,7.2,0.658,9.8,0.269,10.1,0.675,24,ATTENZIONE: n_eff=7.2 (interpreta con cautela)
+Ucraina (Feb 2022),Diesel,shock_hard,8.2,0.533,2.4,0.822,16.5,0.519,12,ATTENZIONE: n_eff=8.2 (interpreta con cautela)
+Ucraina (Feb 2022),Diesel,tau_price,12.5,0.472,2.5,0.747,16.5,0.519,12,ok
+Iran-Israele (Giu 2025),Benzina,shock_hard,6.6,0.502,2.9,0.774,7.1,0.717,21,ATTENZIONE: n_eff=6.6 (interpreta con cautela)
+Iran-Israele (Giu 2025),Benzina,tau_price,8.0,0.544,2.6,0.72,7.1,0.717,21,ATTENZIONE: n_eff=8.0 (interpreta con cautela)
+Iran-Israele (Giu 2025),Diesel,shock_hard,17.5,0.067,4.5,0.671,12.6,0.546,13,ok
+Iran-Israele (Giu 2025),Diesel,tau_price,14.0,0.298,6.4,0.452,12.6,0.546,13,ok
+Hormuz (Feb 2026),Benzina,shock_hard,16.1,-0.394,4.3,0.661,12.2,0.392,6,ok
+Hormuz (Feb 2026),Benzina,tau_price,16.1,-0.394,4.3,0.661,12.2,0.392,6,ok
+Hormuz (Feb 2026),Diesel,shock_hard,15.1,-0.367,3.2,0.738,9.2,0.506,9,ok
+Hormuz (Feb 2026),Diesel,tau_price,18.9,-0.406,3.1,0.729,9.2,0.506,9,ok

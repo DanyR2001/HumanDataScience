@@ -1,0 +1,3 @@
+Carburante,beta_up,SE_up_HAC,beta_down,SE_down_HAC,RF_index,t_asimmetria,p_asimmetria,rho_hat_DW,n_obs,tipo,nota
+Benzina,0.00392,0.00121,0.00222,0.00079,1.7648,1.181,0.238468,0.178,380,esplorativo,HAC maxlags=4 (fixed). Non in BH.
+Diesel,0.00558,0.00205,0.00168,0.00105,3.3243,1.695,0.090927,0.25,380,esplorativo,HAC maxlags=4 (fixed). Non in BH.

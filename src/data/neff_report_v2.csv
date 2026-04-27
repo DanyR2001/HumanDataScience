@@ -1,0 +1,5 @@
+Evento,Carburante,serie,n_post,rho_hat_AR1,n_eff,df_nominale,df_effettivo,inflation_factor,inflazione_nota,t_critico_nominale,t_critico_effettivo,andrews_BW,bw_fixato_v1,rho_al_lag4,rho_al_lag_andrews,p_confirmatorio_v2,raccomandazione
+Ucraina (Feb 2022),Benzina,margine_benzina,44,0.6954,7.9,43,6.9,5.57,CRITICO: n_eff molto piccolo — p-value non affidabili,1.681,1.899,22,4,0.234,0.000338,N/A,Riportare n_eff≈8 nel paper. Usare Andrews BW=22 per HAC. TEST POCO INFORMATIVO.
+Ucraina (Feb 2022),Diesel,margine_diesel,44,0.4484,16.8,43,15.8,2.63,ATTENZIONE: inflazione significativa,1.681,1.748,9,4,0.04,0.000733,N/A,Riportare n_eff≈17 nel paper. Usare Andrews BW=9 per HAC.
+Iran-Israele (Giu 2025),Benzina,margine_benzina,29,0.6519,6.1,28,5.1,4.75,ATTENZIONE: inflazione significativa,1.701,2.005,14,4,0.181,0.002505,N/A,Riportare n_eff≈6 nel paper. Usare Andrews BW=14 per HAC. TEST POCO INFORMATIVO.
+Iran-Israele (Giu 2025),Diesel,margine_diesel,29,0.5616,8.1,28,7.1,3.56,ATTENZIONE: inflazione significativa,1.701,1.889,12,4,0.099,0.000984,N/A,Riportare n_eff≈8 nel paper. Usare Andrews BW=12 per HAC.

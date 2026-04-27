@@ -309,6 +309,8 @@ if futures_ok.get("gasoil_usd_tonne"):
     merged_f["margine_dies_crack"] = (merged_f["diesel_eur_l"]
                                       - merged_f["gasoil_eur_l"])
 
+
+
 merged_f.to_csv("data/dataset_merged_with_futures.csv")
 print(f"Dataset con futures: {len(merged_f)} settimane")
 

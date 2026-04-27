@@ -1,0 +1,7 @@
+Carburante,serie_A,serie_B,mean_A,mean_B,delta_A_minus_B,MW_stat,p_value,alternativa,tipo,nota
+Benzina,2025-H1 pre-shock (n=23),2019-full (n=52),0.254,0.16827,0.08572,1196.0,0.0,greater,esplorativo,Non in BH — contestualizzazione anomalia pre-shock
+Benzina,2025-H1 pre-shock (n=23),2023-full (n=52),0.254,0.23519,0.01881,845.0,0.004622,two-sided,esplorativo,Non in BH — contestualizzazione anomalia pre-shock
+Benzina,2025-H1 pre-shock (n=23),2024-full (n=53),0.254,0.23273,0.02127,894.0,0.001322,two-sided,esplorativo,Non in BH — contestualizzazione anomalia pre-shock
+Diesel,2025-H1 pre-shock (n=23),2019-full (n=52),0.23011,0.14878,0.08133,1169.0,0.0,greater,esplorativo,Non in BH — contestualizzazione anomalia pre-shock
+Diesel,2025-H1 pre-shock (n=23),2023-full (n=52),0.23011,0.21477,0.01534,745.0,0.092321,two-sided,esplorativo,Non in BH — contestualizzazione anomalia pre-shock
+Diesel,2025-H1 pre-shock (n=23),2024-full (n=53),0.23011,0.21004,0.02007,846.0,0.007621,two-sided,esplorativo,Non in BH — contestualizzazione anomalia pre-shock

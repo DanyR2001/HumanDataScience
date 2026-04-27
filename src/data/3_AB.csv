@@ -1,0 +1,17 @@
+famiglia,ipotesi,evento,carburante,test,fonte,n_post,n_pre,n_eff,rho_hat,mu_2019,mean_post,delta,t_stat,p_value,cautela
+A,H0_i,Ucraina (Feb 2022),Benzina,HAC_t,HAC_t_Ucraina (Feb 2022)_Benzina,27,52,4.7,0.702,0.16825,0.23544,0.06719,2.1411,0.052058,True
+A,H0_i,Ucraina (Feb 2022),Benzina,MannWhitney,MannWhitney_Ucraina (Feb 2022)_Benzina,27,52,,,0.16825,0.23544,0.06719,,0.000479,False
+A,H0_i,Ucraina (Feb 2022),Diesel,HAC_t,HAC_t_Ucraina (Feb 2022)_Diesel,27,52,8.2,0.533,0.14873,0.20249,0.05376,2.3687,0.024332,False
+A,H0_i,Ucraina (Feb 2022),Diesel,MannWhitney,MannWhitney_Ucraina (Feb 2022)_Diesel,27,52,,,0.14873,0.20249,0.05376,,7.9e-05,False
+A,H0_i,Iran-Israele (Giu 2025),Benzina,HAC_t,HAC_t_Iran-Israele (Giu 2025)_Benzina,20,52,6.5,0.511,0.16825,0.20512,0.03687,9.0007,8.8e-05,False
+A,H0_i,Iran-Israele (Giu 2025),Benzina,MannWhitney,MannWhitney_Iran-Israele (Giu 2025)_Benzina,20,52,,,0.16825,0.20512,0.03687,,0.0,False
+A,H0_i,Iran-Israele (Giu 2025),Diesel,HAC_t,HAC_t_Iran-Israele (Giu 2025)_Diesel,20,52,16.4,0.1,0.14873,0.17335,0.02462,4.1914,0.000374,False
+A,H0_i,Iran-Israele (Giu 2025),Diesel,MannWhitney,MannWhitney_Iran-Israele (Giu 2025)_Diesel,20,52,,,0.14873,0.17335,0.02462,,1.2e-05,False
+B,H0_ii,Ucraina (Feb 2022),Benzina,HAC_t,HAC_t_Ucraina (Feb 2022)_Benzina_jump,27,25,4.8,0.7,,0.25727,0.05804,1.6734,0.087092,True
+B,H0_ii,Ucraina (Feb 2022),Benzina,MannWhitney,MannWhitney_Ucraina (Feb 2022)_Benzina_jump,27,25,,,,0.25727,0.05804,,0.007813,False
+B,H0_ii,Ucraina (Feb 2022),Diesel,HAC_t,HAC_t_Ucraina (Feb 2022)_Diesel_jump,27,25,8.2,0.533,,0.22132,0.04688,1.8846,0.050098,False
+B,H0_ii,Ucraina (Feb 2022),Diesel,MannWhitney,MannWhitney_Ucraina (Feb 2022)_Diesel_jump,27,25,,,,0.22132,0.04688,,0.004906,False
+B,H0_ii,Iran-Israele (Giu 2025),Benzina,HAC_t,HAC_t_Iran-Israele (Giu 2025)_Benzina_jump,20,23,6.6,0.502,,0.24762,-0.00638,-1.315,0.880237,False
+B,H0_ii,Iran-Israele (Giu 2025),Benzina,MannWhitney,MannWhitney_Iran-Israele (Giu 2025)_Benzina_jump,20,23,,,,0.24762,-0.00637,,0.740619,False
+B,H0_ii,Iran-Israele (Giu 2025),Diesel,HAC_t,HAC_t_Iran-Israele (Giu 2025)_Diesel_jump,20,23,17.5,0.067,,0.20922,-0.02089,-3.1352,0.996896,False
+B,H0_ii,Iran-Israele (Giu 2025),Diesel,MannWhitney,MannWhitney_Iran-Israele (Giu 2025)_Diesel_jump,20,23,,,,0.20922,-0.0209,,0.992298,False

@@ -1,0 +1,7 @@
+Evento,Serie,n_obs,BP_LM,BP_p,BP_H0,DW,DW_H0,rho_hat,LjungBox_p1,LjungBox_p4,SW_W,SW_p,SW_H0
+Ucraina (Feb 2022),Brent,103,24.2969,0.0,eteroschedasticità,0.111,autocorrelazione positiva,0.9445,0.0,0.0,0.9503,0.0007,NON normale
+Ucraina (Feb 2022),Benzina,103,30.9692,0.0,eteroschedasticità,0.0608,autocorrelazione positiva,0.9696,0.0,0.0,0.9206,1e-05,NON normale
+Ucraina (Feb 2022),Diesel,103,22.1936,0.0,eteroschedasticità,0.0917,autocorrelazione positiva,0.9542,0.0,0.0,0.9402,0.00016,NON normale
+Iran-Israele (Giu 2025),Brent,105,4.7043,0.03009,eteroschedasticità,0.2846,autocorrelazione positiva,0.8577,0.0,0.0,0.987,0.40253,normalità non rigettata
+Iran-Israele (Giu 2025),Benzina,105,20.7977,1e-05,eteroschedasticità,0.1038,autocorrelazione positiva,0.9481,0.0,0.0,0.9822,0.17223,normalità non rigettata
+Iran-Israele (Giu 2025),Diesel,105,0.0547,0.8151,omoschedasticità,0.1132,autocorrelazione positiva,0.9434,0.0,0.0,0.9771,0.06622,normalità non rigettata
