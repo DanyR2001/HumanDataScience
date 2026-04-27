@@ -1,0 +1,9 @@
+evento,carburante,famiglia,n_post,n_eff_post,rho_post,cautela
+Ucraina (Feb 2022),Benzina,A,13,2.7,0.653,True
+Ucraina (Feb 2022),Diesel,A,13,2.9,0.637,True
+Iran-Israele (Giu 2025),Benzina,A,2,2.0,0.0,True
+Iran-Israele (Giu 2025),Diesel,A,2,2.0,0.0,True
+Ucraina (Feb 2022),Benzina,B,13,2.8,0.642,True
+Ucraina (Feb 2022),Diesel,B,14,2.4,0.711,True
+Iran-Israele (Giu 2025),Benzina,B,4,12.4,-0.511,False
+Iran-Israele (Giu 2025),Diesel,B,0,1.0,0.0,True

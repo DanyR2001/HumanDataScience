@@ -1,0 +1,5 @@
+Evento,Carburante,A_delta_real,A_p_HAC,A_n_eff,A_BH_reject,B_delta_nom,B_p_HAC,B_BH_reject,C_delta_DiD,C_p_DiD,C_PTA_ok,C_BH_reject
+Ucraina (Feb 2022),Benzina,0.1147,0.0306,2.7,True,0.1092,0.0346,False,-0.0212,0.9556,True,False
+Ucraina (Feb 2022),Diesel,0.0741,0.0841,2.9,False,0.0477,0.1925,False,-0.0553,0.9998,True,False
+Iran-Israele (Giu 2025),Benzina,,,,False,-0.0005,0.5302,False,-0.0007,0.5485,True,False
+Iran-Israele (Giu 2025),Diesel,,,,False,,,False,-0.0086,0.9376,True,False

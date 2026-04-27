@@ -8,7 +8,9 @@ STRUTTURA FAMIGLIE
 ──────────────────
   Famiglia A (H₀_i)   — livello reale vs 2019:         8 test (HAC_t + MW)
   Famiglia B (H₀_ii)  — salto pre→post shock:          8 test (HAC_t + MW)
-  Famiglia C (H₀_iii) — specificità italiana (DiD):    8 test (OLS HC3)
+  Famiglia C (H₀_iii) — specificità italiana (DiD):   N×4 test (OLS HC3)
+                         N = paesi controllo (DE, SE, NL, BE, DK, FI, AT)
+                         = 7 paesi × 2 eventi × 2 carburanti = 28 test
 
 BH separata per famiglia perché ogni famiglia risponde a una domanda
 economica distinta. H₀ macro rifiutata se ≥1 famiglia rigetta.
@@ -210,10 +212,11 @@ if "3_C.csv" in [os.path.basename(p) for p in ["data/3_C.csv"]]:
         df_c = pd.read_csv("data/3_C.csv")
         if "PTA_non_rigettata" in df_c.columns:
             n_pta_viol = df_c["PTA_non_rigettata"].astype(str).str.lower().eq("false").sum()
+            n_c_total  = len(df_c)
             n_c_rej    = family_summary.get("C", {}).get("n_rej", 0)
             if n_pta_viol > 0:
                 print(f"  ⚠  NOTA PTA (Famiglia C):")
-                print(f"     {n_pta_viol}/8 test DiD hanno PTA violata → δ̂ potenzialmente")
+                print(f"     {n_pta_viol}/{n_c_total} test DiD hanno PTA violata → δ̂ potenzialmente")
                 print(f"     contaminato da trend pre-esistenti. Interpretare come")
                 print(f"     evidenza DESCRITTIVA, non causale.")
 
@@ -275,15 +278,32 @@ def _plot_summary(df_all, family_summary, fpath):
     events = ["Ucraina (Feb 2022)", "Iran-Israele (Giu 2025)"]
     fuels  = ["Benzina", "Diesel"]
 
-    # Colonne: A_HAC, A_MW, B_HAC, B_MW, C_DE, C_SE
+    # Colonne famiglie A e B (fisse)
     col_defs = [
-        ("A", "HAC_t",      None,        "A: HAC_t\nliv. reale"),
-        ("A", "MannWhitney",None,        "A: MW\nliv. reale"),
-        ("B", "HAC_t",      None,        "B: HAC_t\nsalto"),
-        ("B", "MannWhitney",None,        "B: MW\nsalto"),
-        ("C", None,         "Germania",  "C: DiD\nvs DE"),
-        ("C", None,         "Svezia",    "C: DiD\nvs SE"),
+        ("A", "HAC_t",       None, "A: HAC_t\nliv. reale"),
+        ("A", "MannWhitney", None, "A: MW\nliv. reale"),
+        ("B", "HAC_t",       None, "B: HAC_t\nsalto"),
+        ("B", "MannWhitney", None, "B: MW\nsalto"),
     ]
+
+    # Colonne famiglia C — generate dinamicamente dai paesi in 3_C.csv
+    # Etichette brevi: usa i primi 2 caratteri del nome paese (es. "Germania" → "DE")
+    PAESE_TO_CODE = {
+        "Germania": "DE", "Svezia": "SE", "Paesi Bassi": "NL",
+        "Belgio": "BE", "Danimarca": "DK", "Finlandia": "FI", "Austria": "AT",
+    }
+    if "paese_controllo" in df_all.columns:
+        c_countries = (df_all[df_all["famiglia"] == "C"]["paese_controllo"]
+                       .dropna().unique().tolist())
+        # Ordine stabile: prima Germania poi gli altri in ordine alfabetico
+        c_countries = sorted(c_countries,
+                             key=lambda x: (0 if x == "Germania" else 1, x))
+    else:
+        c_countries = []
+
+    for paese in c_countries:
+        code = PAESE_TO_CODE.get(paese, paese[:2].upper())
+        col_defs.append(("C", None, paese, f"C: DiD\nvs {code}"))
 
     nrows = len(events) * len(fuels)
     ncols = len(col_defs)
@@ -334,13 +354,16 @@ def _plot_summary(df_all, family_summary, fpath):
                     ax.text(ci + 0.35, ri - 0.35, "PTA✗",
                             ha="right", va="top", fontsize=6, color="#e65100")
 
-    # Separatori tra famiglie
+    # Separatori tra famiglie (A|B a 1.5, B|C a 3.5)
     for xsep in [1.5, 3.5]:
         ax.axvline(xsep, color="#37474f", lw=1.8)
 
-    # Intestazioni famiglie
-    for xi, lbl in [(0.5, "Famiglia A\nH₀(i) livello"), (2.5, "Famiglia B\nH₀(ii) salto"),
-                     (4.5, "Famiglia C\nH₀(iii) DiD")]:
+    # Intestazioni famiglie — posizione C calcolata dinamicamente
+    n_c_cols = len(c_countries)
+    c_mid    = 4 + (n_c_cols - 1) / 2 if n_c_cols > 0 else 4
+    for xi, lbl in [(0.5,   "Famiglia A\nH₀(i) livello"),
+                    (2.5,   "Famiglia B\nH₀(ii) salto"),
+                    (c_mid, "Famiglia C\nH₀(iii) DiD")]:
         ax.text(xi, -0.75, lbl, ha="center", va="bottom", fontsize=9,
                 fontweight="bold", color="#37474f",
                 transform=ax.get_xaxis_transform())

@@ -26,8 +26,8 @@ OUTPUT
 ──────
   data/3_dataset.csv        — dataset principale IT (crack spread nom. + reali)
   data/3_hicp.csv           — HICP mensile per deflazione
-  data/pompa_de.csv         — prezzi pompa Germania (per DiD in 3_03)
-  data/pompa_se.csv         — prezzi pompa Svezia   (per DiD in 3_03)
+  data/pompa_{xx}.csv       — prezzi pompa paesi controllo (per DiD in 3_03)
+                              xx ∈ {de, se, nl, be, dk, fi, at}
   plots/3_01a_brent.png     — Brent EUR/barile nel tempo
   plots/3_01b_pompa_it.png  — prezzi pompa IT benzina e diesel
   plots/3_01c_crack.png     — crack spread nominale vs reale (HICP-deflato)
@@ -78,7 +78,6 @@ HICP_FALLBACK = {
 # INCLUSI (nessun intervento significativo sui prezzi ex-tasse):
 #   DE - Germania     : no price cap; Tankrabatt giu–ago 2022 era sussidio fiscale
 #                       che NON altera il margine ex-tasse → incluso
-#   SE - Svezia       : nessun intervento nel periodo analizzato
 #   NL - Paesi Bassi  : mercato libero, nessun intervento ex-tasse
 #   BE - Belgio       : meccanismo max-price solo su retail inc. tasse
 #   DK - Danimarca    : mercato libero
@@ -91,10 +90,13 @@ HICP_FALLBACK = {
 #   HU - Ungheria     : price cap rigido su prezzi ex-tasse (nov 2021 – lug 2022)
 #   ES - Spagna       : sussidio 0.20 €/L (apr–dic 2022) → distorce margini
 #   PL - Polonia      : riduzione IVA 2022 → altera struttura costi
+# SE - Svezia: ESCLUSA per diesel (reduktionsplikt 30.5% → 6% gen 2024
+#              gonfia artificialmente il margine SE 2022-2023 e crea
+#              una rottura strutturale a gen 2024 non geopolitica).
+#              Usabile per benzina (mandato 7.8%, effetto < 2 ct/L).
 COUNTRY_PREFIXES = {
     "IT": ["IT_"],
     "DE": ["DE_"],
-    "SE": ["SE_"],
     "NL": ["NL_"],
     "BE": ["BE_"],
     "DK": ["DK_"],
@@ -282,8 +284,10 @@ if "IT" not in pompa_dict:
 pompa_it = pompa_dict["IT"]
 pompa_it.to_csv("data/prezzi_pompa_italia.csv")
 
-# Salva DE e SE separatamente per uso in 3_03_did.py
-for country in ["DE", "SE"]:
+# Salva tutti i paesi controllo (non-IT) per uso in 3_03_did.py
+for country in COUNTRY_PREFIXES:
+    if country == "IT":
+        continue
     if country in pompa_dict:
         pompa_dict[country].to_csv(f"data/pompa_{country.lower()}.csv")
         print(f"   Salvato data/pompa_{country.lower()}.csv")

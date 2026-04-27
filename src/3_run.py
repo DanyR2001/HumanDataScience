@@ -9,10 +9,6 @@ corrispondenti alle tre sub-ipotesi di H₀.
   3_03_did.py    → data/3_C.csv + plots/3_did  (Famiglia C)
   3_04_bh.py     → data/3_bh.csv + plots/3_summary (BH + sommario)
 
-Prerequisiti:
-  - data/dataset_merged_with_futures.csv  (da 01_data_pipeline.py)
-  - data/eu_oil_bulletin_history.xlsx     (da 01_data_pipeline.py)
-
 Uso:
   cd /path/to/src
   python 3_run.py
@@ -24,11 +20,23 @@ import os
 import time
 
 SCRIPTS = [
+    # ── Passo 1: dati grezzi ──────────────────────────────────────────────
     ("3_01_data.py",        "Preparazione dati + HICP deflazione"),
-    ("3_02_tests.py",       "Famiglie A + B: HAC_t e Mann-Whitney"),
-    ("3_03_did.py",         "Famiglia C: DiD IT vs EU"),
+
+    # ── Passo 2: rileva QUANDO il mercato si rompe (τ MCMC) ──────────────
+    # DEVE girare prima di 3_02 e 3_03: produce data/3_cp.csv con i tau
+    # MAP dei changepoint, che i test successivi usano come cutoff pre/post
+    # invece della data geopolitica hardcoded.
+    ("3_05_changepoint.py", "MCMC Change Point Detection → tau pre/post"),
+
+    # ── Passo 3-4: test H₀(i)(ii)(iii) con τ come data di taglio ─────────
+    # 3_02 e 3_03 leggono data/3_cp.csv (prodotto al passo 2) per
+    # sostituire la data dell'evento con il τ empirico rilevato dai dati.
+    ("3_02_tests.py",       "Famiglie A + B: HAC_t e Mann-Whitney (con τ MCMC)"),
+    ("3_03_did.py",         "Famiglia C: DiD IT vs EU (con τ MCMC)"),
+
+    # ── Passo 5: correzione multipla e sommario finale ────────────────────
     ("3_04_bh.py",          "Correzione BH + sommario H₀ macro"),
-    ("3_05_changepoint.py", "MCMC Change Point Detection (MH+Gibbs)"),
 ]
 
 
@@ -56,19 +64,6 @@ if __name__ == "__main__":
     os.chdir(script_dir)
     print(f"Workdir: {script_dir}")
 
-    # Controlla prerequisiti
-    prereqs = [
-        "data/dataset_merged_with_futures.csv",
-        "data/eu_oil_bulletin_history.xlsx",
-    ]
-    missing = [p for p in prereqs if not os.path.exists(p)]
-    if missing:
-        print("\nPrerequisiti mancanti:")
-        for m in missing:
-            print(f"  - {m}")
-        print("Eseguire prima 01_data_pipeline.py")
-        sys.exit(1)
-
     t_start = time.time()
     successes = []
 
@@ -90,6 +85,12 @@ if __name__ == "__main__":
     all_ok = all(ok for _, ok in successes) and len(successes) == len(SCRIPTS)
     if all_ok:
         print("\n  Tutti i passi completati.")
+        print("\n  ORDINE LOGICO:")
+        print("    3_01 → dati grezzi")
+        print("    3_05 → τ MCMC (changepoint): QUANDO si rompe il mercato")
+        print("    3_02 → test H₀(i)(ii) con τ come cutoff pre/post")
+        print("    3_03 → DiD H₀(iii) con τ come cutoff pre/post")
+        print("    3_04 → correzione multipla BH + sommario finale")
         print("\n  DATI:")
         print("    data/3_dataset.csv        — crack spread IT nominali + reali (HICP)")
         print("    data/3_hicp.csv           — HICP Italy mensile")

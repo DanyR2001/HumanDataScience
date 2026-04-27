@@ -87,6 +87,84 @@ FUELS = {
                 "color": "#4393c3"},
 }
 
+# Mappa fuel → nome serie in 3_cp.csv
+_FUEL_TO_SERIE = {"Benzina": "Crack_Benz", "Diesel": "Crack_Dies"}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# AGGIORNA date di shock con τ MCMC (da 3_05_changepoint.py)
+# ════════════════════════════════════════════════════════════════════════════
+# Razionale scientifico:
+#   La data dell'evento geopolitico (es. 24 feb 2022) è il "trigger" esterno,
+#   ma il mercato può anticiparla (futures forward-looking) o reagire in
+#   ritardo.  Il changepoint τ rilevato dai dati ci dice QUANDO la struttura
+#   del margine si è effettivamente rotta.  Usare τ come cutoff pre/post:
+#     • Family B: split tra pre e post (più preciso del giorno dell'evento)
+#     • Family A: inizio della finestra post-shock (stessa logica)
+#   Le date hardcoded rimangono come fallback se 3_05 non è ancora girato.
+_CP_PATH = "data/3_cp.csv"
+print(f"\nCerco tau MCMC in {_CP_PATH}...")
+if os.path.exists(_CP_PATH):
+    _df_cp   = pd.read_csv(_CP_PATH)
+    _ev_col  = next((c for c in _df_cp.columns if c.lower() == "evento"),  None)
+    _ser_col = next((c for c in _df_cp.columns if c.lower() == "serie"),   None)
+    _tau_col = next((c for c in _df_cp.columns if c.lower() == "tau"),     None)
+
+    if _ev_col and _ser_col and _tau_col:
+        for evento in EVENTS:
+            # Raccogli τ per Crack_Benz e Crack_Dies separatamente
+            tau_per_fuel: dict[str, pd.Timestamp] = {}
+            for fuel, serie_key in _FUEL_TO_SERIE.items():
+                row = _df_cp[
+                    _df_cp[_ev_col].str.contains(evento[:10], na=False, regex=False) &
+                    (_df_cp[_ser_col] == serie_key)
+                ]
+                if not row.empty:
+                    tau_per_fuel[fuel] = pd.Timestamp(row[_tau_col].iloc[0])
+
+            # Salva tau per-carburante nel dict EVENTS (usato nei loop test)
+            default_shock = EVENTS[evento]["shock"]
+            if tau_per_fuel:
+                # τ medio per aggiornare la finestra grafica e Family A
+                tau_avg = pd.Timestamp(
+                    int(np.mean([t.value for t in tau_per_fuel.values()]))
+                )
+                lag_avg = (tau_avg - default_shock).days
+                if abs(lag_avg) <= 180:
+                    # Cutoff medio per grafici e Family A (level vs 2019)
+                    EVENTS[evento]["shock"]          = tau_avg
+                    EVENTS[evento]["shock_geopolit"] = default_shock
+                    # Cutoff per-fuel per Family B (pre vs post split)
+                    EVENTS[evento]["shock_benz"] = tau_per_fuel.get("Benzina", tau_avg)
+                    EVENTS[evento]["shock_dies"] = tau_per_fuel.get("Diesel",  tau_avg)
+                    old_lbl = EVENTS[evento]["label"]
+                    EVENTS[evento]["label"] = (
+                        old_lbl.split("\n")[0]
+                        + f"\nτ={tau_avg.strftime('%d %b %Y')}"
+                    )
+                    print(f"   ✓ {evento}: shock → τ_avg={tau_avg.date()} "
+                          f"(lag={lag_avg:+d}gg)  "
+                          f"[benz={tau_per_fuel.get('Benzina','–')}  "
+                          f"dies={tau_per_fuel.get('Diesel','–')}]")
+                else:
+                    print(f"   ⚠ {evento}: τ_avg={tau_avg.date()} troppo distante "
+                          f"({lag_avg:+d}gg) — mantengo data hardcoded")
+            else:
+                print(f"   – {evento}: nessun τ crack trovato — uso data hardcoded")
+    else:
+        print(f"   ⚠ {_CP_PATH}: colonne Evento/Serie/tau non trovate — uso hardcoded")
+else:
+    print(f"   {_CP_PATH} non trovato.")
+    print("     ATTENZIONE: 3_05_changepoint.py deve girare prima di 3_02.")
+    print("     Uso date hardcoded (meno precise del τ MCMC).")
+
+
+def _shock_for(ecfg: dict, fuel: str) -> pd.Timestamp:
+    """Restituisce il τ per-carburante se disponibile, altrimenti shock evento."""
+    if fuel == "Benzina":
+        return ecfg.get("shock_benz", ecfg["shock"])
+    return ecfg.get("shock_dies", ecfg["shock"])
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # FUNZIONI STATISTICHE
@@ -186,6 +264,7 @@ for evento, ecfg in EVENTS.items():
         if col_real not in df.columns:
             continue
 
+        # Family A usa il τ medio (ecfg["shock"] già aggiornato con τ MCMC se disponibile)
         post_ser  = df.loc[ecfg["shock"]:ecfg["post_end"], col_real].dropna().values
         bl_ser    = baseline[col_real].dropna().values
         mu_2019   = float(bl_ser.mean())
@@ -247,9 +326,12 @@ for evento, ecfg in EVENTS.items():
         if col_nom not in df.columns:
             continue
 
-        pre_ser  = df.loc[ecfg["pre_start"]:ecfg["shock"] - pd.Timedelta(days=1),
+        # Family B: usa il τ per-carburante come data di taglio pre/post
+        # (più preciso della data geopolitica hardcoded)
+        shock_b = _shock_for(ecfg, fuel)
+        pre_ser  = df.loc[ecfg["pre_start"]:shock_b - pd.Timedelta(days=1),
                           col_nom].dropna().values
-        post_ser = df.loc[ecfg["shock"]:ecfg["post_end"],
+        post_ser = df.loc[shock_b:ecfg["post_end"],
                           col_nom].dropna().values
 
         neff_post, rho_post = compute_neff(post_ser)
@@ -289,9 +371,11 @@ for evento, ecfg in EVENTS.items():
         })
 
         rej = not np.isnan(hac["p_value"]) and hac["p_value"] < ALPHA
+        shock_src = "τ_MCMC" if "shock_benz" in ecfg or "shock_dies" in ecfg else "hardcoded"
         print(f"  {'✓ RIFIUTA H₀' if rej else '  non rifiuta'}  "
               f"{evento[:18]} | {fuel}  δ={hac.get('delta',np.nan):+.4f}  "
               f"p_HAC={hac['p_value']:.4f}  n_post={len(post_ser)}  n_eff={hac.get('n_eff','-')}"
+              f"  cutoff={shock_b.date()}({shock_src})"
               + ("  ⚠CAUTELA" if hac["cautela"] else ""))
 
 
