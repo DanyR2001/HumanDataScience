@@ -1,5 +1,0 @@
-Evento,Carburante,n_settimane_post,shock_year,delta_margine_EUR_L,CI_boot_95_lo,CI_boot_95_hi,volume_proxy_2022_L_w,trend_correzione_v2,volume_corretto_L_w,windfall_MLD_EUR,windfall_CI_lo_MLD,windfall_CI_hi_MLD,trend_%_annuo,nota
-Ucraina (Feb 2022),Benzina,44,2022,0.09618,0.0671,0.12371,33653846.0,1.0,33653846.0,0.142,0.099,0.183,-1.5%,DESCRITTIVO — nessun p-value. Volume corretto per trend EV + efficienza motori dal 2022.
-Ucraina (Feb 2022),Diesel,44,2022,0.08729,0.05437,0.11818,43269231.0,1.0,43269231.0,0.166,0.104,0.225,-1.5%,DESCRITTIVO — nessun p-value. Volume corretto per trend EV + efficienza motori dal 2022.
-Iran-Israele (Giu 2025),Benzina,29,2025,0.08698,0.07764,0.09691,33653846.0,0.9557,32162026.0,0.081,0.072,0.09,-1.5%,DESCRITTIVO — nessun p-value. Volume corretto per trend EV + efficienza motori dal 2022.
-Iran-Israele (Giu 2025),Diesel,29,2025,0.07218,0.05692,0.08706,43269231.0,0.9557,41351176.0,0.087,0.068,0.104,-1.5%,DESCRITTIVO — nessun p-value. Volume corretto per trend EV + efficienza motori dal 2022.

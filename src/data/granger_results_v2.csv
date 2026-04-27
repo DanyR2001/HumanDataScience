@@ -1,9 +1,0 @@
-Carburante,lag_settimane,lag_giorni,F_stat,p_value,significativo,tipo,nota
-Benzina,1,7,58.1534,0.0,True,esplorativo,Non in famiglia BH — evidenza ausiliaria direzione causalità
-Benzina,2,14,37.2801,0.0,True,esplorativo,Non in famiglia BH — evidenza ausiliaria direzione causalità
-Benzina,3,21,30.2538,0.0,True,esplorativo,Non in famiglia BH — evidenza ausiliaria direzione causalità
-Benzina,4,28,22.9215,0.0,True,esplorativo,Non in famiglia BH — evidenza ausiliaria direzione causalità
-Diesel,1,7,42.2334,0.0,True,esplorativo,Non in famiglia BH — evidenza ausiliaria direzione causalità
-Diesel,2,14,35.3117,0.0,True,esplorativo,Non in famiglia BH — evidenza ausiliaria direzione causalità
-Diesel,3,21,26.3188,0.0,True,esplorativo,Non in famiglia BH — evidenza ausiliaria direzione causalità
-Diesel,4,28,20.9148,0.0,True,esplorativo,Non in famiglia BH — evidenza ausiliaria direzione causalità

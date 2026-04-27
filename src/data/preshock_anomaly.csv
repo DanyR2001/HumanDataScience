@@ -1,4 +1,0 @@
-Carburante,finestra,tau_pre_BIC,delta_break,mean_before_break,mean_after_break,n_before,n_after,t_stat_descrittivo,p_welch_NO_INFERENZA,nota
-Benzina,2023-01-01 / 2025-06-12,2024-07-15,0.01941,0.23027,0.24968,80,48,3.957,0.00013,"DESCRITTIVO — break cercato con BIC, t-stat NON corretto per data-snooping. Non usare p_welch per inferenza confermativa."
-Diesel,2023-01-01 / 2025-06-12,2023-05-15,-0.06725,0.24528,0.17803,19,20,-5.654,0.0,"DESCRITTIVO — break cercato con BIC, t-stat NON corretto per data-snooping. Non usare p_welch per inferenza confermativa."
-Diesel,2023-01-01 / 2025-06-12,2023-10-02,0.03964,0.17803,0.21766,20,89,5.702,0.0,"DESCRITTIVO — break cercato con BIC, t-stat NON corretto per data-snooping. Non usare p_welch per inferenza confermativa."

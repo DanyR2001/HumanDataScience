@@ -1,7 +1,0 @@
-Carburante,periodo_A,periodo_B,n_A,n_B,mean_A,mean_B,mean_diff_A_B,MW_p_twosided,tipo,nota
-Benzina,2025-Q1Q2,2019-Q1Q2,23,25,0.254,0.1601,0.0939,0.0,esplorativo,Stagionalità Q1-Q2 pre-shock — non in BH
-Benzina,2025-Q1Q2,2023-Q1Q2,23,26,0.254,0.22865,0.02535,0.00404,esplorativo,Stagionalità Q1-Q2 pre-shock — non in BH
-Benzina,2025-Q1Q2,2024-Q1Q2,23,26,0.254,0.22151,0.03249,3e-05,esplorativo,Stagionalità Q1-Q2 pre-shock — non in BH
-Diesel,2025-Q1Q2,2019-Q1Q2,23,25,0.23011,0.15165,0.07847,0.0,esplorativo,Stagionalità Q1-Q2 pre-shock — non in BH
-Diesel,2025-Q1Q2,2023-Q1Q2,23,26,0.23011,0.23355,-0.00344,0.91226,esplorativo,Stagionalità Q1-Q2 pre-shock — non in BH
-Diesel,2025-Q1Q2,2024-Q1Q2,23,26,0.23011,0.20907,0.02105,0.01858,esplorativo,Stagionalità Q1-Q2 pre-shock — non in BH
