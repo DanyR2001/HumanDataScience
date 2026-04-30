@@ -1,0 +1,7 @@
+﻿evento,shock,carburante,status,sw_stat,sw_p,jb_stat,jb_p,skewness,kurtosis_exc
+Ucraina (Feb 2022),2022-02-24,gasolio,✗ FAIL,0.5754,0.0,46820.6531,0.0,4.322,54.9624
+Ucraina (Feb 2022),2022-02-24,benzina,✗ FAIL,0.5243,0.0,51190.9235,0.0,3.2863,57.8042
+Iran-Israele (Giu 2025),2025-06-13,gasolio,✗ FAIL,0.9062,0.0,685.0296,0.0,1.2703,6.9271
+Iran-Israele (Giu 2025),2025-06-13,benzina,✗ FAIL,0.836,0.0,2303.5601,0.0,-0.5842,13.4796
+Hormuz (Feb 2026),2026-02-28,gasolio,✗ FAIL,0.6105,0.0,11936.6752,0.0,2.8298,33.9378
+Hormuz (Feb 2026),2026-02-28,benzina,✗ FAIL,0.4176,0.0,58006.4982,0.0,3.3989,75.5414

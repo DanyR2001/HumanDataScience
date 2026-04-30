@@ -1,0 +1,7 @@
+﻿evento,shock,carburante,status,adf_stat,adf_p,adf_ok,kpss_stat,kpss_p,kpss_ok
+Ucraina (Feb 2022),2022-02-24,gasolio,⚠ WARN,0.0185,0.0185,True,1.0459,0.01,False
+Ucraina (Feb 2022),2022-02-24,benzina,✗ FAIL,0.4953,0.4953,False,1.3749,0.01,False
+Iran-Israele (Giu 2025),2025-06-13,gasolio,OK,0.0001,0.0001,True,0.3629,0.0931,True
+Iran-Israele (Giu 2025),2025-06-13,benzina,OK,0.003,0.003,True,0.3004,0.1,True
+Hormuz (Feb 2026),2026-02-28,gasolio,⚠ WARN,0.584,0.584,False,0.3919,0.0806,True
+Hormuz (Feb 2026),2026-02-28,benzina,✗ FAIL,0.5911,0.5911,False,1.1426,0.01,False

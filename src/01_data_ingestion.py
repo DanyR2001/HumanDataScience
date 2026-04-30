@@ -333,7 +333,7 @@ def _aggregate_subset(df: pd.DataFrame) -> dict[str, float]:
         prices = pd.to_numeric(df.loc[mask, "prezzo"], errors="coerce").dropna()
         prices = prices[(prices >= PRICE_MIN) & (prices <= PRICE_MAX)]
         if len(prices) >= MIN_OBS:
-            out[fuel] = float(np.median(prices))
+            out[fuel] = float(prices.mean())   # media aritmetica (non mediana)
     return out
 
 
@@ -473,14 +473,17 @@ def load_sisen() -> pd.DataFrame:
     df = df.dropna(subset=["date"])
 
     # Determina tipo carburante da nome o codice
-    if "fuel" in df.columns:
-        fl = df["fuel"].str.strip().str.lower()
-        is_benz = fl.str.contains("benzina", na=False)
-        is_gas  = fl.str.contains("gasolio", na=False)
-    elif "codice" in df.columns:
-        # Convenzione SISEN: 1 = benzina, 2 = gasolio
+    # Convenzione SISEN: codice 1 = Benzina, 2 = Gasolio AUTO.
+    # Usiamo il codice numerico come discriminante primario per evitare di
+    # catturare "Gasolio riscaldamento" (cod. 3) con un semplice str.contains("gasolio").
+    if "codice" in df.columns:
         is_benz = df["codice"].str.strip() == "1"
         is_gas  = df["codice"].str.strip() == "2"
+    elif "fuel" in df.columns:
+        fl = df["fuel"].str.strip().str.lower()
+        is_benz = fl.str.contains("benzina", na=False)
+        # Usa "gasolio auto" per escludere "gasolio riscaldamento"
+        is_gas  = fl.str.contains("gasolio auto", na=False)
     else:
         raise ValueError("Impossibile identificare il tipo carburante nel CSV SISEN. "
                          "Colonne: " + str(df.columns.tolist()))
