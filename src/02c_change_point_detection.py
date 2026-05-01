@@ -92,21 +92,21 @@ FUELS = {
 EVENTS: dict[str, dict] = {
     "Ucraina (Feb 2022)": {
         "shock":     pd.Timestamp("2022-02-24"),
-        "pre_start": pd.Timestamp("2021-09-01"),
-        "post_end":  pd.Timestamp("2022-08-31"),
+        "pre_start": pd.Timestamp("2021-12-01"),
+        "post_end":  pd.Timestamp("2022-04-24"),
         "color":     "#e74c3c",
         "label":     "Russia-Ucraina\n(24 feb 2022)",
     },
     "Iran-Israele (Giu 2025)": {
         "shock":     pd.Timestamp("2025-06-13"),
-        "pre_start": pd.Timestamp("2025-01-01"),
-        "post_end":  pd.Timestamp("2025-10-31"),
+        "pre_start": pd.Timestamp("2025-04-13"),
+        "post_end":  pd.Timestamp("2025-08-13"),
         "color":     "#e67e22",
         "label":     "Iran-Israele\n(13 giu 2025)",
     },
     "Hormuz (Feb 2026)": {
         "shock":     pd.Timestamp("2026-02-28"),
-        "pre_start": pd.Timestamp("2025-08-01"),
+        "pre_start": pd.Timestamp("2025-12-28"),
         "post_end":  pd.Timestamp("2026-04-30"),
         "color":     "#8e44ad",
         "label":     "Stretto di Hormuz\n(28 feb 2026)",
@@ -304,6 +304,106 @@ def pelt_detect(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# L5 – Window-based L2 Discrepancy  (Paper BLOCCO 1 – Eq. 1–2)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _l2_cost(y: np.ndarray) -> float:
+    """
+    Funzione di costo intra-finestra (Paper, Eq. 2):
+        c(y_I) = Σ_{t∈I} ||y_t − ȳ||²₂
+    Equivale alla varianza pesata per n: misura la dispersione interna
+    alla finestra I. Assunzione gaussiana (costo L2 quadratico).
+    """
+    if len(y) < 2:
+        return 0.0
+    return float(np.sum((y - y.mean()) ** 2))
+
+
+def window_discrepancy_l2(
+    series: pd.Series,
+    shock: pd.Timestamp,
+    search: int   = SEARCH,
+    ma_window: int = 7,
+    min_seg: int   = 14,
+) -> dict:
+    """
+    Changepoint detection via discrepanza L2 tra due finestre contigue (Paper, Eq. 1–2).
+
+    Pre-processing obbligatorio (Paper): moving average a 7 giorni.
+
+    Algoritmo:
+      Per ogni candidato v ∈ [u+min_seg, w−min_seg]:
+        d(y_{uv}, y_{vw}) = c(y_{uw}) − c(y_{uv}) − c(y_{vw})
+      Changepoint = argmax_v  d(...)
+
+    La discrepanza d misura quanto v divide la serie in due segmenti
+    omogenei al loro interno ma diversi tra loro. Picco di d → break.
+
+    Validazione BIC: il changepoint L5 è attendibile se coincide
+    (entro ±7gg) con almeno uno dei break trovati da L3 BinSeg o L4 PELT.
+
+    Returns
+    -------
+    dict con:
+      tau       – data del changepoint rilevato
+      d_max     – valore massimo della discrepanza
+      d_values  – pd.Series(d, index=candidate_dates)
+      ma_series – serie dopo MA a 7 giorni (per plot)
+      bic_ok    – bool: il changepoint è in accordo con L3/L4
+    """
+    # Slice nella finestra di ricerca
+    mask = (series.index >= shock - pd.Timedelta(days=search)) & \
+           (series.index <= shock + pd.Timedelta(days=search))
+    win = series[mask].dropna()
+
+    if len(win) < 2 * min_seg + ma_window:
+        return {
+            "tau": shock, "d_max": 0.0,
+            "d_values": pd.Series(dtype=float),
+            "ma_series": pd.Series(dtype=float),
+            "bic_ok": False,
+        }
+
+    # Pre-processing: MA a 7 giorni (centrante, min_periods=1 per i bordi)
+    ma = win.rolling(ma_window, center=True, min_periods=1).mean()
+    y  = ma.values
+    n  = len(y)
+
+    # c(y_{uw}) — costo dell'intera finestra (costante nel loop)
+    c_uw = _l2_cost(y)
+
+    # Scan su tutti i candidati v
+    d_vals: list[float] = []
+    cand_dates: list[pd.Timestamp] = []
+
+    for v in range(min_seg, n - min_seg):
+        c_uv = _l2_cost(y[:v])
+        c_vw = _l2_cost(y[v:])
+        d    = c_uw - c_uv - c_vw
+        d_vals.append(d)
+        cand_dates.append(ma.index[v])
+
+    if not cand_dates:
+        return {
+            "tau": shock, "d_max": 0.0,
+            "d_values": pd.Series(dtype=float),
+            "ma_series": ma,
+            "bic_ok": False,
+        }
+
+    d_series = pd.Series(d_vals, index=cand_dates)
+    best_tau = d_series.idxmax()
+
+    return {
+        "tau":       best_tau,
+        "d_max":     float(d_series.max()),
+        "d_values":  d_series,
+        "ma_series": ma,
+        "bic_ok":    False,   # aggiornato in plot_event_fuel dopo L3/L4
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Plotting per evento + carburante
 # ══════════════════════════════════════════════════════════════════════════════
 def plot_event_fuel(
@@ -316,8 +416,9 @@ def plot_event_fuel(
     ax_cusum:  plt.Axes,
     ax_tstat:  plt.Axes,
     ax_bic:    plt.Axes,
+    ax_l5:     plt.Axes | None = None,
 ) -> dict:
-    """Disegna i 4 pannelli per un singolo carburante e restituisce risultati."""
+    """Disegna i 4+1 pannelli per un singolo carburante e restituisce risultati."""
 
     # ── Slice della finestra ──────────────────────────────────────────────────
     win = series[(series.index >= ev["pre_start"]) &
@@ -345,6 +446,17 @@ def plot_event_fuel(
 
     # ── L4: PELT ─────────────────────────────────────────────────────────────
     pelt_breaks = pelt_detect(win)
+
+    # ── L5: Window discrepancy L2 (Paper BLOCCO 1 – Eq. 1–2) ─────────────────
+    l5_res = window_discrepancy_l2(win, shock, search=SEARCH)
+    # Validazione BIC: L5 è attendibile se coincide (±7gg) con L3 o L4
+    _all_bic_breaks = binseg_best + pelt_breaks
+    if _all_bic_breaks and l5_res["d_values"] is not None and not l5_res["d_values"].empty:
+        l5_res["bic_ok"] = any(
+            abs((l5_res["tau"] - b).days) <= 7 for b in _all_bic_breaks
+        )
+    else:
+        l5_res["bic_ok"] = False
 
     # ════ PANNELLO 1: prezzi + break lines  (zoom ZOOM_WIN gg attorno a τ) ═════
     # Centrato su τ (break rilevato), non sullo shock: mostra esattamente
@@ -431,6 +543,40 @@ def plot_event_fuel(
                     ha="center", va="center", transform=ax_bic.transAxes, fontsize=8)
     ax_bic.grid(alpha=0.25)
 
+    # ════ PANNELLO 5: L5 Window Discrepancy (Paper Eq. 1–2) ═══════════════════
+    if ax_l5 is not None:
+        d_vals = l5_res.get("d_values")
+        ma_ser = l5_res.get("ma_series")
+        l5_tau = l5_res["tau"]
+        bic_ok = l5_res["bic_ok"]
+
+        if d_vals is not None and not d_vals.empty:
+            ax_l5.plot(d_vals.index, d_vals.values, color=color, lw=0.9,
+                       label="d(y_uv, y_vw) — discrepanza L2")
+            ax_l5.axvline(shock,   color=ev["color"], lw=1.5, ls="--", label="Shock")
+            ax_l5.axvline(l5_tau,  color=color,       lw=1.8, ls=":",
+                          label=f"L5 τ={l5_tau.date()}"
+                                f"  {'✓ BIC ok' if bic_ok else '– non confermato BIC'}")
+            ax_l5.axhline(0, color="grey", lw=0.6, ls="-")
+
+            # Evidenzia il massimo con una stella
+            ax_l5.scatter([l5_tau], [d_vals.max()],
+                          color=color, s=60, zorder=5, marker="*")
+
+            ax_l5.set_ylabel("Discrepanza d (€/L)²", fontsize=8)
+            ax_l5.legend(fontsize=6)
+            bic_tag = "✓ confermato da BIC (L3/L4)" if bic_ok else "⚠ non in accordo con BIC"
+            ax_l5.set_title(
+                f"L5 Window Discrepancy L2  |  τ={l5_tau.date()}  "
+                f"d_max={l5_res['d_max']:.4f}  {bic_tag}",
+                fontsize=7, pad=2
+            )
+        else:
+            ax_l5.text(0.5, 0.5, "L5: dati insufficienti",
+                       ha="center", va="center", transform=ax_l5.transAxes, fontsize=8)
+        ax_l5.grid(alpha=0.25)
+        ax_l5.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+
     return {
         "L1_tau":      best_tau,
         "L1_t":        best_t,
@@ -440,6 +586,9 @@ def plot_event_fuel(
         "L3_binseg":   binseg_best,
         "L3_best_n":   binseg_res.get("best_n"),
         "L4_pelt":     pelt_breaks,
+        "L5_tau":      l5_res["tau"],
+        "L5_d_max":    l5_res["d_max"],
+        "L5_bic_ok":   l5_res["bic_ok"],
     }
 
 
@@ -541,14 +690,14 @@ def main() -> None:
         print(f"  Finestra: {ev['pre_start'].date()} → {ev['post_end'].date()}")
         print(f"{'═'*70}")
 
-        fig = plt.figure(figsize=(18, 14))
+        fig = plt.figure(figsize=(18, 18))
         fig.suptitle(
             f"Change-point detection sul MARGINE – {ev_name}\n"
             f"Shock: {ev['label'].replace(chr(10), ' ')}",
             fontsize=13, fontweight="bold"
         )
 
-        gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.55, wspace=0.30)
+        gs = gridspec.GridSpec(5, 2, figure=fig, hspace=0.55, wspace=0.30)
 
         ev_results: dict = {}
 
@@ -571,6 +720,7 @@ def main() -> None:
             ax_cusum = fig.add_subplot(gs[1, col_idx])
             ax_tstat = fig.add_subplot(gs[2, col_idx])
             ax_bic   = fig.add_subplot(gs[3, col_idx])
+            ax_l5    = fig.add_subplot(gs[4, col_idx])
 
             ax_price.set_title(
                 f"{fuel_key.capitalize()} – {ev['label'].replace(chr(10),' ')}",
@@ -585,6 +735,7 @@ def main() -> None:
                 ax_cusum=ax_cusum,
                 ax_tstat=ax_tstat,
                 ax_bic=ax_bic,
+                ax_l5=ax_l5,
             )
             ev_results[fuel_key] = res
 
@@ -598,6 +749,9 @@ def main() -> None:
                       + (", ".join(str(d.date()) for d in res['L3_binseg']) or "nessuno"))
                 print(f"    L4 PELT ({len(res['L4_pelt'])} break): "
                       + (", ".join(str(d.date()) for d in res['L4_pelt']) or "nessuno"))
+                bic_tag = "✓ BIC ok" if res.get("L5_bic_ok") else "⚠ non confermato BIC"
+                print(f"    L5 Window-L2 τ={res['L5_tau'].date()}"
+                      f"  d_max={res['L5_d_max']:.4f}  {bic_tag}")
 
         all_results[ev_name] = ev_results
 
@@ -611,15 +765,18 @@ def main() -> None:
     print("RIEPILOGO CHANGE POINT MARGINE – tutti gli eventi")
     print(f"{'═'*70}")
     print(f"{'Evento':<28} {'Carb.':<10} {'L1 τ':<13} {'Δ €/L':>8} "
-          f"{'p_bonf':>8} {'L4 PELT break'}")
-    print("-"*80)
+          f"{'p_bonf':>8} {'L5 τ (window-L2)':<15} {'L5 BIC'}")
+    print("-"*90)
     for ev_name, fuels in all_results.items():
         for fuel, res in fuels.items():
             if not res:
                 continue
             pelt_str = ", ".join(str(d.date()) for d in res["L4_pelt"]) or "—"
+            l5_str   = str(res.get("L5_tau", shock).date()) if res.get("L5_tau") else "—"
+            bic_str  = "✓" if res.get("L5_bic_ok") else "⚠"
             print(f"{ev_name:<28} {fuel:<10} {str(res['L1_tau'].date()):<13} "
-                  f"{res['L1_delta']:>+8.4f} {res['L1_p_bonf']:>8.3f}  {pelt_str}")
+                  f"{res['L1_delta']:>+8.4f} {res['L1_p_bonf']:>8.3f}  "
+                  f"{l5_str:<15} {bic_str}")
 
 
 if __name__ == "__main__":

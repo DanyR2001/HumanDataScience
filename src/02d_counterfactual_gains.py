@@ -79,21 +79,21 @@ FUELS = {
 EVENTS: dict[str, dict] = {
     "Ucraina (Feb 2022)": {
         "shock":     pd.Timestamp("2022-02-24"),
-        "pre_start": pd.Timestamp("2021-09-01"),
-        "post_end":  pd.Timestamp("2022-08-31"),
+        "pre_start": pd.Timestamp("2021-12-01"),
+        "post_end":  pd.Timestamp("2022-04-24"),
         "color":     "#e74c3c",
         "label":     "Russia-Ucraina\n(24 feb 2022)",
     },
     "Iran-Israele (Giu 2025)": {
         "shock":     pd.Timestamp("2025-06-13"),
-        "pre_start": pd.Timestamp("2025-01-01"),
-        "post_end":  pd.Timestamp("2025-10-31"),
+        "pre_start": pd.Timestamp("2025-04-13"),
+        "post_end":  pd.Timestamp("2025-08-13"),
         "color":     "#e67e22",
         "label":     "Iran-Israele\n(13 giu 2025)",
     },
     "Hormuz (Feb 2026)": {
         "shock":     pd.Timestamp("2026-02-28"),
-        "pre_start": pd.Timestamp("2025-08-01"),
+        "pre_start": pd.Timestamp("2025-12-28"),
         "post_end":  pd.Timestamp("2026-04-30"),
         "color":     "#8e44ad",
         "label":     "Stretto di Hormuz\n(28 feb 2026)",

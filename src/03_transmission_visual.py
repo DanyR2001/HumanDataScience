@@ -66,25 +66,25 @@ DAILY_VOL = {"benzina": 12_000_000, "gasolio": 25_000_000}  # L/giorno
 
 EVENTS: dict[str, dict] = {
     "Ucraina (Feb 2022)": {
-        "shock":    pd.Timestamp("2022-02-24"),
-        "win_pre":  pd.Timestamp("2021-09-01"),
-        "win_post": pd.Timestamp("2022-09-30"),
-        "color":    "#e74c3c",
-        "label":    "Russia-Ucraina  ·  24 feb 2022",
+        "shock":     pd.Timestamp("2022-02-24"),
+        "pre_start": pd.Timestamp("2021-12-01"),
+        "post_end":  pd.Timestamp("2022-04-24"),
+        "color":     "#e74c3c",
+        "label":     "Russia-Ucraina\n(24 feb 2022)",
     },
     "Iran-Israele (Giu 2025)": {
-        "shock":    pd.Timestamp("2025-06-13"),
-        "win_pre":  pd.Timestamp("2025-01-01"),
-        "win_post": pd.Timestamp("2025-11-30"),
-        "color":    "#e67e22",
-        "label":    "Iran-Israele  ·  13 giu 2025",
+        "shock":     pd.Timestamp("2025-06-13"),
+        "pre_start": pd.Timestamp("2025-04-13"),
+        "post_end":  pd.Timestamp("2025-08-13"),
+        "color":     "#e67e22",
+        "label":     "Iran-Israele\n(13 giu 2025)",
     },
     "Hormuz (Feb 2026)": {
-        "shock":    pd.Timestamp("2026-02-28"),
-        "win_pre":  pd.Timestamp("2025-09-01"),
-        "win_post": pd.Timestamp("2026-04-30"),
-        "color":    "#8e44ad",
-        "label":    "Stretto di Hormuz  ·  28 feb 2026",
+        "shock":     pd.Timestamp("2026-02-28"),
+        "pre_start": pd.Timestamp("2025-12-28"),
+        "post_end":  pd.Timestamp("2026-04-30"),
+        "color":     "#8e44ad",
+        "label":     "Stretto di Hormuz\n(28 feb 2026)",
     },
 }
 
@@ -338,8 +338,8 @@ def _setup_date_axis(ax: plt.Axes, interval_months: int = 1) -> None:
 def plot_event(ev_name: str, ev: dict, data: dict[str, pd.Series],
                out_dir: Path) -> None:
     shock     = ev["shock"]
-    win_pre   = ev["win_pre"]
-    win_post  = ev["win_post"]
+    pre_start   = ev["pre_start"]
+    post_end  = ev["post_end"]
     ev_color  = ev["color"]
 
     # ── Trova τ per ogni livello della catena ────────────────────────────────
@@ -349,7 +349,7 @@ def plot_event(ev_name: str, ev: dict, data: dict[str, pd.Series],
         if series is None or series.empty:
             tau[key] = None
             continue
-        win = series[(series.index >= win_pre) & (series.index <= win_post)].dropna()
+        win = series[(series.index >= pre_start) & (series.index <= post_end)].dropna()
         if len(win) < 2 * HALF_WIN:
             tau[key] = None
             continue
@@ -360,8 +360,8 @@ def plot_event(ev_name: str, ev: dict, data: dict[str, pd.Series],
               else f"    {key:<18}  τ = N/A")
 
     # ── Finestra temporale del plot ──────────────────────────────────────────
-    t_start = win_pre
-    t_end   = win_post
+    t_start = pre_start
+    t_end   = post_end
 
     # ── Layout figura ─────────────────────────────────────────────────────────
     fig = plt.figure(figsize=(20, 16), facecolor="white")

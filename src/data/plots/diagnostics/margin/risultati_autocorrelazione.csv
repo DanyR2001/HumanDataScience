@@ -1,7 +1,0 @@
-﻿evento,shock,carburante,status,phi_ar1,n,n_eff,lb_p_lag5,lb_p_lag10,lb_p_lag20,lb_violazione
-Ucraina (Feb 2022),2022-02-24,gasolio,✗ FAIL,0.1928,364,246,0.000,0.000,0.000,True
-Ucraina (Feb 2022),2022-02-24,benzina,✗ FAIL,0.1254,364,282,0.000,0.000,0.000,True
-Iran-Israele (Giu 2025),2025-06-13,gasolio,✗ FAIL,0.027,303,287,0.351,0.027,0.009,True
-Iran-Israele (Giu 2025),2025-06-13,benzina,OK,0.1184,303,238,0.067,0.165,0.408,False
-Hormuz (Feb 2026),2026-02-28,gasolio,✗ FAIL,0.0324,243,227,0.000,0.000,0.000,True
-Hormuz (Feb 2026),2026-02-28,benzina,✗ FAIL,0.1258,243,188,0.000,0.000,0.000,True

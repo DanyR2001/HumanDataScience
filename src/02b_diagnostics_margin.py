@@ -60,24 +60,24 @@ FUELS = {
 EVENTS: dict[str, dict] = {
     "Ucraina (Feb 2022)": {
         "shock":     pd.Timestamp("2022-02-24"),
-        "pre_start": pd.Timestamp("2021-09-01"),
-        "post_end":  pd.Timestamp("2022-08-31"),
+        "pre_start": pd.Timestamp("2021-12-01"),
+        "post_end":  pd.Timestamp("2022-04-24"),
         "color":     "#e74c3c",
-        "label":     "Russia-Ucraina (24 feb 2022)",
+        "label":     "Russia-Ucraina\n(24 feb 2022)",
     },
     "Iran-Israele (Giu 2025)": {
         "shock":     pd.Timestamp("2025-06-13"),
-        "pre_start": pd.Timestamp("2025-01-01"),
-        "post_end":  pd.Timestamp("2025-10-31"),
+        "pre_start": pd.Timestamp("2025-04-13"),
+        "post_end":  pd.Timestamp("2025-08-13"),
         "color":     "#e67e22",
-        "label":     "Iran-Israele (13 giu 2025)",
+        "label":     "Iran-Israele\n(13 giu 2025)",
     },
     "Hormuz (Feb 2026)": {
         "shock":     pd.Timestamp("2026-02-28"),
-        "pre_start": pd.Timestamp("2025-08-01"),
+        "pre_start": pd.Timestamp("2025-12-28"),
         "post_end":  pd.Timestamp("2026-04-30"),
         "color":     "#8e44ad",
-        "label":     "Stretto di Hormuz (28 feb 2026)",
+        "label":     "Stretto di Hormuz\n(28 feb 2026)",
     },
 }
 
@@ -384,7 +384,22 @@ def plot_one_normality(win, ev, fuel_key, fcolor, res):
     diff = win.diff().dropna()
     fig, ax = plt.subplots(figsize=(6, 5))
     (osm, osr), (slope, intercept, _) = stats.probplot(diff, dist="norm")
-    ax.scatter(osm, osr, s=10, color=fcolor, alpha=0.65, rasterized=True)
+
+    # ── Intervallo di confidenza puntuale al 95% (formula asintotica) ──────────
+    # Per l'i-esimo order statistic con plotting position p_i = Φ(osm_i):
+    #   Var[x_(i)] ≈ σ² · p_i·(1-p_i) / (n · φ(z_i)²)
+    # CI su asse y: (slope·z_i + intercept) ± 1.96 · |slope| · SE_i
+    # dove SE_i = sqrt(p_i·(1-p_i)/n) / φ(z_i)
+    n       = len(diff)
+    pi      = stats.norm.cdf(osm)                        # plotting positions
+    phi_i   = stats.norm.pdf(osm)                        # densità nei quantili teorici
+    phi_i   = np.where(phi_i < 1e-10, 1e-10, phi_i)     # evita divisione per zero
+    se      = np.sqrt(pi * (1 - pi) / n) / phi_i
+    ci_lo   = slope * osm + intercept - 1.96 * abs(slope) * se
+    ci_hi   = slope * osm + intercept + 1.96 * abs(slope) * se
+
+    ax.fill_between(osm, ci_lo, ci_hi, color="red", alpha=0.12, label="IC 95%")
+    ax.scatter(osm, osr, s=10, color=fcolor, alpha=0.65, rasterized=True, zorder=3)
     xlim = np.array([min(osm), max(osm)])
     ax.plot(xlim, slope * xlim + intercept, color="red", lw=1.5, ls="--", label="Normale teorica")
     ax.set_xlabel("Quantili N(0,1)", fontsize=10)
