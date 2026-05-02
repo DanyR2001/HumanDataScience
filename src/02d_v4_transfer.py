@@ -87,6 +87,7 @@ from scipy import stats, optimize
 sys.path.insert(0, str(Path(__file__).parent / "utils"))
 from conversions import GAS_OIL, EUROBOB as EUROBOB_HC, load_eurusd, usd_ton_to_eur_liter
 from diagnostics import run_diagnostic_tests, plot_residual_diagnostics
+from theta_loader import load_theta
 
 try:
     from statsmodels.tsa.arima.model import ARIMA
@@ -108,9 +109,9 @@ _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
 # v4 usa BOCPD (Bayesian Online) come detection autonoma — non legge theta_results.csv
 
 PRE_START   = pd.Timestamp("2015-01-01")  # inizio dataset per il fit ARIMA
-PRE_WIN     = 60    # giorni pre-T0 usati SOLO per il plot (no-lookahead garantito)
-POST_WIN    = 60    # giorni post-T0 per l'analisi intervento
-CI_ALPHA    = 0.10  # CI al 90%
+PRE_WIN     = 30    # giorni pre-T0 usati SOLO per il plot (no-lookahead garantito)
+POST_WIN    = 30    # giorni post-T0 per l'analisi intervento
+CI_ALPHA    = 0.05   # CI al 90%
 SEARCH      = 30    # PELT: ricerca ±SEARCH giorni dallo shock
 CCF_NLAGS   = 20    # numero di lag CCF da calcolare
 MAX_ITER    = 300   # iterazioni ARIMA/SARIMAX
@@ -119,6 +120,7 @@ MAX_ITER    = 300   # iterazioni ARIMA/SARIMAX
 ARIMA_P  = [0, 1, 2]
 ARIMA_D  = [0, 1]
 ARIMA_Q  = [0, 1, 2]
+
 
 DAILY_CONSUMPTION_L = {
     "benzina": 12_000_000,
@@ -1127,18 +1129,18 @@ def main() -> None:
         for row_idx, (fuel_key, (col_name, fuel_color)) in enumerate(FUELS.items()):
             series = data[col_name].dropna()
 
-            # ── Determina T0 — BOCPD autonomo ────────────────────────────────
+            # ── Determina T0 — θ da 02c_change_point_detection.py ───────────
             if mode == "detected":
-                # Seleziona la serie su cui applicare la detection
-                if detect_target == "price":
-                    detect_col    = PRICE_COLS[fuel_key]
-                    detect_series = data[detect_col].dropna()
+                theta = load_theta(ev_name, fuel_key, detect_target,
+                                   base_dir=BASE_DIR)
+                if theta is not None:
+                    t0           = theta
+                    break_method = "glm_poisson_02c"
                 else:
-                    detect_series = series  # margine (default)
-                bp           = detect_breakpoint_bocpd(detect_series, shock)
-                t0           = bp["tau"]
-                break_method = bp["method"]
-                cp_prob      = bp["cp_prob"]
+                    print(f"  ⚠ [{fuel_key}] θ non trovato — uso shock come fallback.")
+                    t0           = shock
+                    break_method = "fallback_shock"
+                cp_prob = np.nan
             else:
                 t0           = shock
                 break_method = "fixed_at_shock"
@@ -1152,7 +1154,7 @@ def main() -> None:
             ].dropna()
             post = series[
                 (series.index >= t0) &
-                (series.index < t0 + pd.Timedelta(days=POST_WIN))
+                (series.index < shock + pd.Timedelta(days=POST_WIN))
             ].dropna()
 
             if len(pre) < 15 or len(post) < 5:

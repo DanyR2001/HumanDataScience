@@ -68,6 +68,7 @@ from diagnostics import (
     run_diagnostic_tests,
     plot_residual_diagnostics,
 )
+from theta_loader import load_theta
 
 try:
     import statsmodels.api as sm
@@ -86,11 +87,11 @@ EUROBOB_CSV = BASE_DIR / "data" / "Futures" / "Eurobob_B7H1_date.csv"
 EURUSD_CSV  = BASE_DIR / "data" / "raw" / "eurusd.csv"
 _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
 
-PRE_WIN   = 60    # giorni pre per stimare baseline
-POST_WIN  = 60    # giorni post per calcolare l'extra profitto
+PRE_WIN   = 90    # giorni pre per stimare baseline
+POST_WIN  = 30    # giorni post per calcolare l'extra profitto
 SEARCH    = 30    # ricerca break ±SEARCH giorni dallo shock (mode=detected)
 HALF_WIN  = 30    # semi-finestra del Chow test intorno al break (giorni per lato)
-CI_ALPHA  = 0.10  # α → CI/PI al 90%
+CI_ALPHA  =  0.05   # α → CI/PI al 90%
 POISSON_EPS = 1e-4  # epsilon per lo shift Poisson (€/L)
 
 DAILY_CONSUMPTION_L = {
@@ -631,20 +632,34 @@ def _plot_event_fuel(
     ax_main.plot(win.index, win.values, color=fuel_color, lw=1.0, zorder=3,
                  label=f"{fuel_key.capitalize()} effettivo")
 
-    # ── Baseline OLS HAC ──────────────────────────────────────────────────────
-    ax_main.plot(baseline_ols.index, baseline_ols.values,
+    # ── Baseline OLS HAC: fitted nel pre + proiezione nel post ───────────────
+    _anchor_ols = info_ols["anchor"]
+    _pre_idx    = info_ols["pre"].index
+    _x_pre_ols  = np.array([(d - _anchor_ols).days for d in _pre_idx], dtype=float)
+    _pre_fit_ols = info_ols["slope"] * _x_pre_ols + info_ols["intercept"]
+    # unisci pre fitted + post projection in una linea continua
+    _full_idx_ols = _pre_idx.append(baseline_ols.index)
+    _full_val_ols = np.concatenate([_pre_fit_ols, baseline_ols.values])
+    ax_main.plot(_full_idx_ols, _full_val_ols,
                  color="dimgrey", lw=1.4, ls="--",
                  label=f"Baseline {hac_label} (R²={info_ols['r2']:.2f})")
     ax_main.fill_between(ci_low_ols.index, ci_low_ols.values, ci_high_ols.values,
                          alpha=0.12, color="grey",
                          label=f"PI {int((1-CI_ALPHA)*100)}% OLS HAC")
 
-    # ── Baseline GLM Poisson (se disponibile) ─────────────────────────────────
+    # ── Baseline GLM Poisson: fitted nel pre + proiezione nel post ────────────
     if baseline_glm is not None and info_glm is not None:
-        glm_color = "#2980b9"
-        disp_tag  = (f"χ²/df={info_glm['pearson_disp']:.2f}"
-                     f"{'  ⚠overdispersione' if info_glm['overdispersed'] else ''}")
-        ax_main.plot(baseline_glm.index, baseline_glm.values,
+        glm_color   = "#2980b9"
+        disp_tag    = (f"χ²/df={info_glm['pearson_disp']:.2f}"
+                       f"{'  ⚠overdispersione' if info_glm['overdispersed'] else ''}")
+        _anchor_glm = info_glm["anchor"]
+        _pre_idx_g  = info_glm["pre"].index
+        _x_pre_g    = np.array([(d - _anchor_glm).days for d in _pre_idx_g], dtype=float)
+        _X_pre_g    = np.column_stack([np.ones(len(_x_pre_g)), _x_pre_g])
+        _pre_fit_glm = np.exp(_X_pre_g @ info_glm["params"]) - info_glm["shift"]
+        _full_idx_glm = _pre_idx_g.append(baseline_glm.index)
+        _full_val_glm = np.concatenate([_pre_fit_glm, baseline_glm.values])
+        ax_main.plot(_full_idx_glm, _full_val_glm,
                      color=glm_color, lw=1.4, ls="-.",
                      label=f"Baseline GLM Poisson ({disp_tag})")
         ax_main.fill_between(ci_low_glm.index, ci_low_glm.values, ci_high_glm.values,
@@ -679,6 +694,17 @@ def _plot_event_fuel(
     ax_main.xaxis.set_major_formatter(mdates.DateFormatter("%d %b %y"))
     ax_main.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0, interval=2))
     plt.setp(ax_main.xaxis.get_majorticklabels(), rotation=35, ha="right", fontsize=7)
+
+    # ── Zoom y-axis: ignora i CI ampi, mostra solo dati + baseline ───────────
+    _y_data = [win.values, _full_val_ols]
+    if baseline_glm is not None:
+        _y_data.append(_full_val_glm)
+    _y_all  = np.concatenate([v for v in _y_data if len(v) > 0])
+    _y_all  = _y_all[np.isfinite(_y_all)]
+    if len(_y_all) > 0:
+        _ymin, _ymax = float(np.nanmin(_y_all)), float(np.nanmax(_y_all))
+        _pad = max(abs(_ymax - _ymin) * 0.25, 0.005)
+        ax_main.set_ylim(_ymin - _pad, _ymax + _pad)
 
     # ── Pannello guadagno cumulato: OLS vs Poisson ────────────────────────────
     cum_ols = (extra_ols * DAILY_CONSUMPTION_L[fuel_key] / 1e6).cumsum()
@@ -765,38 +791,22 @@ def main() -> None:
         for row_idx, (fuel_key, (col_name, fuel_color)) in enumerate(FUELS.items()):
             series = data[col_name].dropna()
 
-            # ── Determina serie di detection ──────────────────────────────────
-            if mode == "detected" and detect_target == "price":
-                detect_series = data[PRICE_COLS[fuel_key]].dropna()
-            else:
-                detect_series = series  # margine (default)
-
-            # ── Determina break date — Window L2 Discrepancy (paper) ──────────
+            # ── Determina break date ─────────────────────────────────────────
             if mode == "detected":
-                bp = detect_breakpoint(detect_series, shock)
-
-                break_date   = bp["tau"]
-                d_max        = bp["d_max"]
-                break_method = bp["method"]
-                delta        = 0.0    # non calcolato da L2 (è d_max la metrica)
-                p_bonf       = np.nan  # L2 non produce p-value
-                t_stat       = np.nan
-
-                safe_ev = ev_name.replace(" ","_").replace("/","").replace("(","").replace(")","")
-                det_out = OUT_DIR / f"detect_{safe_ev}_{fuel_key}.png"
-                _plot_detection_window(
-                    detect_series=detect_series,
-                    shock=shock,
-                    df_cands=bp["_df"],
-                    threshold=float(np.percentile(bp["_df"]["d"], 75))
-                              if not bp["_df"].empty else 0.0,
-                    selected_tau=break_date,
-                    fuel_key=fuel_key,
-                    fuel_color=fuel_color,
-                    ev_name=ev_name,
-                    detect_target=detect_target,
-                    out_path=det_out,
-                )
+                # Carica θ canonico (GLM Poisson) da 02c_change_point_detection.py
+                theta = load_theta(ev_name, fuel_key, detect_target,
+                                   base_dir=BASE_DIR)
+                if theta is not None:
+                    break_date   = theta
+                    break_method = "glm_poisson_02c"
+                else:
+                    print(f"  ⚠ [{fuel_key}] θ non trovato — uso shock come fallback.")
+                    break_date   = shock
+                    break_method = "fallback_shock"
+                d_max  = np.nan
+                delta  = 0.0
+                p_bonf = np.nan
+                t_stat = np.nan
             else:
                 break_date   = shock
                 d_max        = np.nan

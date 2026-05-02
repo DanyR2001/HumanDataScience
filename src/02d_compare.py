@@ -43,7 +43,9 @@ COLORS = {
     "v1_naive":        "#2c7fb8",
     "v2_intermediate": "#31a354",
     "v3_arimax":       "#e6550d",
-    "v4_sarimax":      "#0de2e6"
+    "v4_sarimax":      "#0de2e6",
+    "v5_causalimpact": "#984ea3",
+    "v6_glm_gamma":    "#ff7f00",
 }
 
 LABELS = {
@@ -51,6 +53,8 @@ LABELS = {
     "v2_intermediate": "V2 – OLS HAC",
     "v3_arimax":       "V3 – ARIMAX/ITS",
     "v4_sarimax":      "V4 – SARIMAX",
+    "v5_causalimpact": "V5 – BSTS CausalImpact",
+    "v6_glm_gamma":    "V6 – GLM Gamma",
 }
 
 FUEL_PATTERNS = {"benzina": "/", "gasolio": ""}
@@ -66,10 +70,12 @@ def load_results(mode: str, detect_target: str = "margin") -> pd.DataFrame:
     else:
         its_dir = _OUT_BASE / mode
     csv_paths = {
-        "v1_naive":        its_dir / "v1_naive"       / "v1_naive_results.csv",
+        "v1_naive":        its_dir / "v1_naive"        / "v1_naive_results.csv",
         "v2_intermediate": its_dir / "v2_intermediate" / "v2_intermediate_results.csv",
         "v3_arimax":       its_dir / "v3_arimax"       / "v3_arimax_results.csv",
-        "v4_sarimax":      its_dir / "v4_transfer"       /"v4_sarimax_results.csv",
+        "v4_sarimax":      its_dir / "v4_transfer"     / "v4_sarimax_results.csv",
+        "v5_causalimpact": its_dir / "v5_causalimpact" / "v5_causalimpact_results.csv",
+        "v6_glm_gamma":    its_dir / "v6_glm_gamma"    / "v6_glm_gamma_results.csv",
     }
 
     frames = []
@@ -89,6 +95,9 @@ def load_results(mode: str, detect_target: str = "margin") -> pd.DataFrame:
         # v2 usa gain_ols_meur invece di gain_total_meur
         if "gain_total_meur" not in df.columns and "gain_ols_meur" in df.columns:
             df = df.rename(columns={"gain_ols_meur": "gain_total_meur"})
+        # v5 usa abs_effect_avg_eurl invece di extra_mean_eurl
+        if "extra_mean_eurl" not in df.columns and "abs_effect_avg_eurl" in df.columns:
+            df = df.rename(columns={"abs_effect_avg_eurl": "extra_mean_eurl"})
 
         cols_keep = ["metodo", "evento", "carburante",
                      "gain_total_meur", "gain_ci_low_meur", "gain_ci_high_meur",
@@ -119,7 +128,7 @@ def make_comparison_table(df: pd.DataFrame) -> pd.DataFrame:
         values="gain_total_meur",
         aggfunc="first",
     )
-    available = [m for m in ["v1_naive","v2_intermediate","v3_arimax"] if m in pivot.columns]
+    available = [m for m in ["v1_naive","v2_intermediate","v3_arimax","v4_sarimax","v5_causalimpact","v6_glm_gamma"] if m in pivot.columns]
     if len(available) > 1:
         pivot["range_meur"] = pivot[available].max(axis=1) - pivot[available].min(axis=1)
         pivot["mean_meur"]  = pivot[available].mean(axis=1)
@@ -203,7 +212,7 @@ def plot_barplot(df: pd.DataFrame, out_path: Path, mode: str) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def plot_scatter(pivot_df: pd.DataFrame, out_path: Path, mode: str) -> None:
-    available = [m for m in ["v1_naive","v2_intermediate","v3_arimax"]
+    available = [m for m in ["v1_naive","v2_intermediate","v3_arimax","v4_sarimax","v5_causalimpact","v6_glm_gamma"]
                  if m in pivot_df.columns]
     pairs = [(a, b) for i, a in enumerate(available) for b in available[i+1:]]
 
@@ -263,7 +272,7 @@ def plot_scatter(pivot_df: pd.DataFrame, out_path: Path, mode: str) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def plot_heatmap(df: pd.DataFrame, out_path: Path, mode: str) -> None:
-    available = [m for m in ["v1_naive","v2_intermediate","v3_arimax"]
+    available = [m for m in ["v1_naive","v2_intermediate","v3_arimax","v4_sarimax","v5_causalimpact","v6_glm_gamma"]
                  if m in df["metodo"].unique()]
 
     if len(available) < 2:
@@ -318,7 +327,7 @@ def plot_heatmap(df: pd.DataFrame, out_path: Path, mode: str) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def print_sign_agreement(pivot_df: pd.DataFrame) -> None:
-    available = [m for m in ["v1_naive","v2_intermediate","v3_arimax"]
+    available = [m for m in ["v1_naive","v2_intermediate","v3_arimax","v4_sarimax","v5_causalimpact","v6_glm_gamma"]
                  if m in pivot_df.columns]
     if len(available) < 2:
         return
@@ -408,7 +417,7 @@ def main() -> None:
     plot_heatmap(df, OUT_DIR / "compare_heatmap.png", mode_label)
 
     # ── Statistiche ───────────────────────────────────────────────────────────
-    available = [m for m in ["v1_naive","v2_intermediate","v3_arimax"]
+    available = [m for m in ["v1_naive","v2_intermediate","v3_arimax","v4_sarimax","v5_causalimpact","v6_glm_gamma"]
                  if m in pivot_raw.columns]
     if len(available) >= 2:
         gains  = pivot_raw[available].values.astype(float)

@@ -60,6 +60,7 @@ from diagnostics import (
     plot_residual_diagnostics,
     plot_sarima_diagnostics,
 )
+from theta_loader import load_theta
 
 try:
     from statsmodels.tsa.arima.model import ARIMA
@@ -87,9 +88,9 @@ EURUSD_CSV  = BASE_DIR / "data" / "raw" / "eurusd.csv"
 _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
 # v3 usa PELT (ruptures RBF) come detection autonoma — non legge theta_results.csv
 
-PRE_WIN   = 60    # giorni pre-T0 per il fit ARIMA
-POST_WIN  = 60    # giorni post-T0 per il counterfactual
-CI_ALPHA  = 0.10  # CI al 90%
+PRE_WIN   = 30    # giorni pre-T0 per il fit ARIMA
+POST_WIN  = 30    # giorni post-T0 per il counterfactual
+CI_ALPHA  = 0.05  # CI al 90%
 SEARCH    = 30    # ricerca PELT ±SEARCH giorni dallo shock (mode=detected)
 
 # Griglia auto-ARIMA
@@ -690,18 +691,18 @@ def main() -> None:
         for row_idx, (fuel_key, (col_name, fuel_color)) in enumerate(FUELS.items()):
             series = data[col_name].dropna()
 
-            # ── Determina T0 — PELT RBF autonomo ─────────────────────────────
+            # ── Determina T0 — θ da 02c_change_point_detection.py ───────────
             if mode == "detected":
-                # Scegli la serie su cui fare detection
-                if detect_target == "price":
-                    detect_col    = "benzina_net" if fuel_key == "benzina" else "gasolio_net"
-                    detect_series = data[detect_col].dropna()
+                theta = load_theta(ev_name, fuel_key, detect_target,
+                                   base_dir=BASE_DIR)
+                if theta is not None:
+                    t0           = theta
+                    break_method = "glm_poisson_02c"
                 else:
-                    detect_series = series  # margine (default)
-                bp           = detect_breakpoint_pelt(detect_series, shock)
-                t0           = bp["tau"]
-                break_method = bp["method"]
-                n_breaks     = bp.get("n_breaks_total", 0)
+                    print(f"  ⚠ [{fuel_key}] θ non trovato — uso shock come fallback.")
+                    t0           = shock
+                    break_method = "fallback_shock"
+                n_breaks = 0
             else:
                 t0           = shock
                 break_method = "fixed_at_shock"
@@ -713,7 +714,7 @@ def main() -> None:
             ].dropna()
             post = series[
                 (series.index >= t0) &
-                (series.index < t0 + pd.Timedelta(days=POST_WIN))
+                (series.index < shock + pd.Timedelta(days=POST_WIN))
             ].dropna()
 
             if len(pre) < 15 or len(post) < 5:
@@ -776,7 +777,7 @@ def main() -> None:
                       f"{'OK' if diag['lb_p'] > 0.05 else '⚠'}")
 
             # ── SARIMA(0,1,1)(0,1,0)_12 benchmark ────────────────────────────
-            sarima = fit_sarima_benchmark(pre, n_steps=len(post), s=12)
+            sarima = fit_sarima_benchmark(pre, n_steps=len(post), s=7)
             sarima_res_s: dict | None = None
             if sarima is not None:
                 sarima_extra = post.values - sarima["forecast"]

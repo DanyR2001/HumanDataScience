@@ -14,17 +14,13 @@ Assunzioni (e limitazioni):
 
 Modalità (--mode):
   fixed     : break = data dello shock hardcodata [default]
-  detected  : break rilevato con sliding window naïve autonomo
-              (nessuna dipendenza da theta_results.csv / 02c)
-
-              Algoritmo: per ogni τ in [shock−SEARCH, shock+SEARCH],
-              calcola |mean_pre − mean_post| / pooled_std su finestre
-              fisse di MIN_SEG giorni. Selezione: primo τ nel top quartile
-              dello score (inizio della rottura strutturale).
+  detected  : break θ letto da theta_results.csv prodotto da
+              02c_change_point_detection.py (GLM Poisson canonico).
+              Eseguire prima: python3 02c_change_point_detection.py --detect {margin|price}
 
 Parametro --detect (solo mode=detected):
-  margin  : detection sul margine distributore  [default]
-  price   : detection sul prezzo alla pompa netto (€/L)
+  margin  : usa θ rilevato sul margine distributore  [default]
+  price   : usa θ rilevato sul prezzo alla pompa netto (€/L)
 
 Output:
   data/plots/its/fixed/v1_naive/                    (mode=fixed)
@@ -52,6 +48,7 @@ from diagnostics import (
     run_diagnostic_tests,
     plot_residual_diagnostics,
 )
+from theta_loader import load_theta
 
 try:
     import statsmodels.api as _sm
@@ -67,13 +64,11 @@ EUROBOB_CSV = BASE_DIR / "data" / "Futures" / "Eurobob_B7H1_date.csv"
 EURUSD_CSV  = BASE_DIR / "data" / "raw" / "eurusd.csv"
 _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
 
-PRE_WIN   = 60    # giorni pre-break per stimare la baseline
-POST_WIN  = 60    # giorni post-break per calcolare l'extra profitto
-CI_ALPHA  = 0.10  # livello α → intervallo di previsione al 90%
+PRE_WIN   = 30    # giorni pre-break per stimare la baseline
+POST_WIN  = 30    # giorni post-break per calcolare l'extra profitto
+CI_ALPHA  = 0.05   # livello α → intervallo di previsione al 90%
 
-# Parametri della sliding window naïve (mode=detected)
-SEARCH    = 30    # ricerca τ in [shock-SEARCH, shock+SEARCH] giorni
-MIN_SEG   = 15    # finestra minima per lato (pre e post) del confronto
+# SEARCH e MIN_SEG rimossi: la detection è centralizzata in 02c (GLM Poisson)
 
 DAILY_CONSUMPTION_L = {
     "benzina": 12_000_000,
@@ -161,75 +156,7 @@ def load_margin_data() -> pd.DataFrame:
     return df
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Break point detection — Naive (mode=detected)
-# ══════════════════════════════════════════════════════════════════════════════
 
-def detect_breakpoint_naive(series: pd.Series, shock: pd.Timestamp) -> dict:
-    """
-    Metodo naïve: scansiona ogni giorno τ nell'intervallo
-    [shock − SEARCH, shock + SEARCH] e calcola |mean_pre − mean_post| / pooled_std
-    su finestre fisse di MIN_SEG giorni per lato.
-
-    È il test più elementare di cambio di livello: non corregge per
-    autocorrelazione AR(1) (come fa v2) e non usa modelli parametrici
-    (come fa v3 con PELT).
-
-    Selezione del break:
-      Tra i candidati nel top quartile dello score (break con segnale genuino),
-      viene scelto il PRIMO in ordine temporale (il più a sinistra / più antico).
-      Questo cattura l'inizio effettivo della rottura strutturale, non
-      necessariamente il picco del segnale.
-
-    Fallback → shock date se nessun candidato supera MIN_SEG osservazioni.
-    """
-    candidates = pd.date_range(
-        shock - pd.Timedelta(days=SEARCH),
-        shock + pd.Timedelta(days=SEARCH),
-        freq="1D",
-    )
-    rows = []
-
-    for t in candidates:
-        pre  = series[
-            (series.index >= t - pd.Timedelta(days=MIN_SEG)) &
-            (series.index < t)
-        ].dropna()
-        post = series[
-            (series.index >= t) &
-            (series.index < t + pd.Timedelta(days=MIN_SEG))
-        ].dropna()
-
-        if len(pre) < MIN_SEG or len(post) < MIN_SEG:
-            continue
-
-        diff       = abs(float(pre.mean()) - float(post.mean()))
-        pooled_std = np.sqrt((float(pre.std())**2 + float(post.std())**2) / 2)
-        score      = diff / pooled_std if pooled_std > 1e-12 else 0.0
-        rows.append({"tau": t, "score": score,
-                     "dist": abs((t - shock).days)})
-
-    if not rows:
-        return {"tau": shock, "score": 0.0, "method": "sliding_mean_naive_nofound",
-                "_df": pd.DataFrame(), "_threshold": 0.0}
-
-    df_c = pd.DataFrame(rows)
-
-    # Filtra al top quartile dello score (break con segnale genuino)
-    threshold = float(np.percentile(df_c["score"], 75))
-    top = df_c[df_c["score"] >= threshold]
-    if top.empty:
-        top = df_c  # fallback: usa tutti i candidati
-
-    # Scegli il PRIMO in ordine temporale tra i candidati di qualità
-    best = top.sort_values("tau").iloc[0]
-    return {
-        "tau":        best["tau"],
-        "score":      round(float(best["score"]), 4),
-        "method":     "sliding_mean_naive",
-        "_df":        df_c,          # tutti i candidati con score e dist
-        "_threshold": threshold,     # soglia 75° percentile
-    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -333,7 +260,7 @@ def _plot_event_fuel(
         ax_main.axvline(break_date, color="black", lw=1.2, ls=":",
                         label=f"τ rilevato ({break_date.date()}, score={break_score:.2f})")
 
-    mode_str = f"Break={break_date.date()} (naive score={break_score:.2f})" \
+    mode_str = f"Break=θ {break_date.date()} (GLM Poisson 02c)" \
                if mode == "detected" else f"Break=shock ({shock.date()})"
     ax_main.set_title(
         f"[V1-Naïve / mode={mode}]  {fuel_key.capitalize()} – {ev_name}\n"
@@ -396,7 +323,7 @@ def main() -> None:
     if mode == "fixed":
         print("  Break = shock date hardcodata (nessuna detection)")
     else:
-        print(f"  Break = sliding window naïve autonomo  (ricerca ±{SEARCH}gg)")
+        print(f"  Break = θ GLM Poisson da 02c_change_point_detection.py")
         print(f"  Detection su: {'MARGINE distributore' if detect_target == 'margin' else 'PREZZO POMPA NETTO'}")
     print(f"  Finestra: PRE={PRE_WIN}gg / POST={POST_WIN}gg dal break point")
     print(f"  Output: {OUT_DIR}")
@@ -421,16 +348,19 @@ def main() -> None:
 
             # ── Determina break date ──────────────────────────────────────────
             if mode == "detected":
-                # Seleziona la serie su cui applicare la detection
-                if detect_target == "price":
-                    detect_series = data[PRICE_COLS[fuel_key]].dropna()
+                # Carica θ canonico (GLM Poisson) prodotto da 02c
+                theta = load_theta(ev_name, fuel_key, detect_target,
+                                   base_dir=BASE_DIR)
+                if theta is not None:
+                    break_date   = theta
+                    break_method = "glm_poisson_02c"
+                    break_score  = np.nan
                 else:
-                    detect_series = series  # margine (default)
-                # Sliding window naïve autonomo — nessuna dipendenza esterna
-                bp           = detect_breakpoint_naive(detect_series, shock)
-                break_date   = bp["tau"]
-                break_method = bp["method"]
-                break_score  = bp["score"]
+                    print(f"  ⚠ [{fuel_key}] θ non trovato in theta_results.csv "
+                          f"— uso shock come fallback.")
+                    break_date   = shock
+                    break_method = "fallback_shock"
+                    break_score  = np.nan
             else:
                 break_date   = shock
                 break_method = "fixed_at_shock"
@@ -442,7 +372,7 @@ def main() -> None:
             ]
             post_data = series[
                 (series.index >= break_date) &
-                (series.index < break_date + pd.Timedelta(days=POST_WIN))
+                (series.index < shock + pd.Timedelta(days=POST_WIN))
             ]
 
             if len(pre_data) < 10 or len(post_data) < 5:
