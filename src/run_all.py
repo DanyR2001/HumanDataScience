@@ -7,30 +7,29 @@ Esegue l'intera pipeline in ordine.
 Pipeline base (senza mode):
   02a     →  diagnostics prezzi
   02b     →  diagnostics margini
-  02c     →  change point detection margini
+  02c     →  change point detection (margin e price)
   02d     →  analisi controfattuale (legacy)
 
 Pipeline ITS (per ciascun mode):
-  v1      →  ITS Metodo 1: OLS Naïve
-  v2      →  ITS Metodo 2: OLS HAC Newey-West
-  v3      →  ITS Metodo 3: ARIMAX (Masena & Shongwe 2024)
-  cmp     →  Confronto 3 metodi ITS
+  v1      →  ITS Metodo 1: OLS Naïve           [detection: sliding window naïve]
+  v2      →  ITS Metodo 2: OLS HAC Newey-West  [detection: Window L2 Discrepancy]
+  v3      →  ITS Metodo 3: ARIMAX              [detection: PELT RBF]
+  v4      →  ITS Metodo 4: SARIMAX + CCF       [detection: BOCPD Bayesian Online]
+  cmp     →  Confronto metodi ITS
 
 Modalità di break detection (--mode / argomento positivo):
   fixed     : tutti usano la data dello shock hardcodata  [default per ITS]
   detected  : per ogni metodo, il break viene rilevato automaticamente
+              con l'algoritmo proprio del metodo (nessuna dipendenza da 02c)
 
 Variante di detection (--detect / argomento positivo, solo per mode=detected):
   margin    : detection sul margine distributore           [default → entrambi]
   price     : detection sul prezzo alla pompa netto
-  window_l2 : discrepanza L2 con MA-7 (Paper BLOCCO 1, Eq. 1–2)
-              argmax_v [c(y_uw) − c(y_uv) − c(y_vw)]
 
   Di default, se --mode detected viene specificato senza --detect,
-  la pipeline gira TUTTE e TRE le varianti (margin + price + window_l2), producendo:
+  la pipeline gira ENTRAMBE le varianti (margin + price), producendo:
     data/plots/its/detected/margin/{metodo}/
     data/plots/its/detected/price/{metodo}/
-    data/plots/its/detected/window_l2/{metodo}/
 
 Uso:
   python3 run_all.py                            # solo pipeline base (02a→02d)
@@ -39,8 +38,6 @@ Uso:
   python3 run_all.py detected margin            # ITS detected solo margin
   python3 run_all.py detected price             # ITS detected solo price
   python3 run_all.py detected --detect=price    # equivalente a sopra
-  python3 run_all.py detected window_l2         # ITS detected solo window_l2 (Paper L2)
-  python3 run_all.py v1 detected window_l2      # solo v1, detected, metodo paper
   python3 run_all.py fixed detected             # entrambe le modalità ITS
   python3 run_all.py v1 v2 fixed                # solo v1/v2 in modalità fixed
   python3 run_all.py v3 cmp detected            # v3 e compare in detected (margin+price)
@@ -75,7 +72,20 @@ ITS_STEPS = [
 ITS_KEYS  = {k for k, _, _ in ITS_STEPS}
 BASE_KEYS = {k for k, _, _ in BASE_STEPS}
 MODE_VALS   = {"fixed", "detected"}
-DETECT_VALS = {"margin", "price", "window_l2"}  # varianti di detection (solo mode=detected)
+DETECT_VALS = {"margin", "price"}  # varianti di detection (solo mode=detected)
+
+# Ogni metodo ITS ha il proprio algoritmo di detection autonomo:
+#   v1  → sliding window naïve     (margin o price)
+#   v2  → Window L2 Discrepancy    (margin o price)
+#   v3  → PELT RBF                 (margin o price)
+#   v4  → BOCPD Bayesian Online    (margin o price)
+DETECT_ALLOWED: dict[str, set[str]] = {
+    "v1":  {"margin", "price"},
+    "v2":  {"margin", "price"},
+    "v3":  {"margin", "price"},
+    "v4":  {"margin", "price"},
+    "cmp": {"margin", "price"},
+}
 
 
 def run_step(filename: str, extra_args: list[str]) -> tuple[str, float]:
@@ -185,13 +195,20 @@ def main() -> None:
     # ── Step ITS per ogni mode (e variante detect se mode=detected) ───────────
     for mode in modes:
         if mode == "detected":
-            # Default: tutte e tre le varianti; altrimenti filtra
-            detect_variants = detects if detects else ["margin", "price", "window_l2"]
+            # Default: entrambe le varianti; altrimenti filtra
+            detect_variants = detects if detects else ["margin", "price"]
         else:
             detect_variants = ["–"]  # fixed non usa --detect
 
         for detect in detect_variants:
             for key, filename, label in run_its_steps:
+                # Salta la combinazione se il metodo non supporta questa variante di detect
+                if mode == "detected" and detect in DETECT_VALS:
+                    allowed = DETECT_ALLOWED.get(key, {"margin", "price"})
+                    if detect not in allowed:
+                        print(f"\n  ⚙  {key}[detected/{detect}]  →  skipped "
+                              f"({detect} non supportato da {key})")
+                        continue
                 if mode == "detected":
                     tag       = f"{key}[detected/{detect}]"
                     extra_args = ["--mode", "detected", "--detect", detect]

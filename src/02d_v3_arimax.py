@@ -85,6 +85,7 @@ GASOIL_CSV  = BASE_DIR / "data" / "Futures" / "London Gas Oil Futures Historical
 EUROBOB_CSV = BASE_DIR / "data" / "Futures" / "Eurobob_B7H1_date.csv"
 EURUSD_CSV  = BASE_DIR / "data" / "raw" / "eurusd.csv"
 _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
+# v3 usa PELT (ruptures RBF) come detection autonoma — non legge theta_results.csv
 
 PRE_WIN   = 60    # giorni pre-T0 per il fit ARIMA
 POST_WIN  = 60    # giorni post-T0 per il counterfactual
@@ -125,10 +126,6 @@ FUELS: dict[str, tuple[str, str]] = {
     "gasolio": ("margin_gasolio", "#1D3557"),
 }
 
-PRICE_COLS: dict[str, str] = {
-    "benzina": "benzina_net",
-    "gasolio": "gasolio_net",
-}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -253,185 +250,6 @@ def detect_breakpoint_pelt(series: pd.Series, shock: pd.Timestamp) -> dict:
         "_filtered_breaks": filtered,        # break nel range [shock±SEARCH]
     }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Break point detection — Window L2 Discrepancy (Paper BLOCCO 1 – Eq. 1–2)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _l2_cost_v3(y: np.ndarray) -> float:
-    """c(y_I) = Σ||y_t − ȳ||² — costo L2 intra-finestra (Paper, Eq. 2)."""
-    if len(y) < 2:
-        return 0.0
-    return float(np.sum((y - y.mean()) ** 2))
-
-
-def detect_breakpoint_window_l2(
-    series: pd.Series,
-    shock: pd.Timestamp,
-    ma_window: int = 7,
-    min_seg: int   = 14,
-) -> dict:
-    """
-    Changepoint via discrepanza L2 (Paper BLOCCO 1, Eq. 1–2).
-
-        d(y_{uv}, y_{vw}) = c(y_{uw}) − c(y_{uv}) − c(y_{vw})
-        changepoint = argmax_v  d(...)
-
-    Pre-processing: MA a 7 giorni. Restituisce un dict compatibile
-    con il formato di detect_breakpoint_pelt (per il dispatch in main).
-    """
-    mask = (
-        (series.index >= shock - pd.Timedelta(days=SEARCH)) &
-        (series.index <= shock + pd.Timedelta(days=SEARCH))
-    )
-    win = series[mask].dropna()
-
-    if len(win) < 2 * min_seg + ma_window:
-        return {"tau": shock, "method": "window_l2_nofound", "n_breaks_total": 0,
-                "_window_series": win, "_all_breaks": [], "_filtered_breaks": []}
-
-    ma = win.rolling(ma_window, center=True, min_periods=1).mean()
-    y  = ma.values
-    n  = len(y)
-    c_uw = _l2_cost_v3(y)
-
-    d_vals: list[float] = []
-    cand_dates: list[pd.Timestamp] = []
-
-    for v in range(min_seg, n - min_seg):
-        d = c_uw - _l2_cost_v3(y[:v]) - _l2_cost_v3(y[v:])
-        d_vals.append(d)
-        cand_dates.append(ma.index[v])
-
-    if not cand_dates:
-        return {"tau": shock, "method": "window_l2_nofound", "n_breaks_total": 0,
-                "_window_series": win, "_all_breaks": [], "_filtered_breaks": []}
-
-    best_idx = int(np.argmax(d_vals))
-    best_tau = cand_dates[best_idx]
-
-    return {
-        "tau":              best_tau,
-        "method":           "window_l2",
-        "n_breaks_total":   1,
-        "all_filtered":     [str(best_tau.date())],
-        "_window_series":   ma,
-        "_all_breaks":      [best_tau],
-        "_filtered_breaks": [best_tau],
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Diagnostic plot — finestra PELT (mode=detected)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _plot_detection_window_pelt(
-    window_series: pd.Series,
-    shock: pd.Timestamp,
-    all_breaks: list,
-    filtered_breaks: list,
-    selected_tau: pd.Timestamp,
-    fuel_key: str,
-    fuel_color: str,
-    ev_name: str,
-    detect_target: str,
-    out_path: "Path",
-) -> None:
-    """
-    Salva un grafico diagnostico PELT con due pannelli:
-      · Top   : serie nella finestra, tutti i break PELT (grigio),
-                quelli nel range ±SEARCH (colorati), shock e break scelto.
-      · Bottom: distanza di ciascun break filtrato dallo shock date;
-                break scelto (★ = più vicino) evidenziato.
-    """
-    if window_series.empty:
-        return
-
-    fig, (ax_s, ax_d) = plt.subplots(2, 1, figsize=(12, 7),
-                                     gridspec_kw={"height_ratios": [1.6, 1]})
-    fig.suptitle(
-        f"[v3 ARIMAX – detection PELT]  {ev_name}  ·  {fuel_key.capitalize()}\n"
-        f"Serie: {'prezzo pompa netto' if detect_target == 'price' else 'margine dist.'}"
-        f"  |  Shock: {shock.date()}  |  Break scelto: {selected_tau.date()}"
-        f"  ({(selected_tau - shock).days:+d}gg)",
-        fontsize=9, fontweight="bold"
-    )
-
-    # ── Pannello 1: serie + break PELT ───────────────────────────────────────
-    ax_s.plot(window_series.index, window_series.values,
-              color="grey", lw=0.9, alpha=0.7, label=detect_target)
-
-    for bd in all_breaks:
-        if bd not in filtered_breaks:
-            ax_s.axvline(bd, color="#cccccc", lw=0.8, ls="--", alpha=0.7)
-
-    for bd in filtered_breaks:
-        col = fuel_color if bd == selected_tau else "steelblue"
-        lw  = 2.2 if bd == selected_tau else 1.0
-        ax_s.axvline(bd, color=col, lw=lw, alpha=0.8)
-
-    ax_s.axvline(shock, color="#e74c3c", lw=1.4, ls="--",
-                 label=f"Shock {shock.date()}")
-
-    # Etichette dei break filtrati
-    y_rng = window_series.max() - window_series.min() if not window_series.empty else 1
-    for i, bd in enumerate(filtered_breaks):
-        dist = (bd - shock).days
-        y_pos = (window_series.max() - 0.05 * y_rng * (i % 3 + 1)
-                 if not window_series.empty else 0)
-        star = " ★" if bd == selected_tau else ""
-        ax_s.text(bd, y_pos, f"{bd.date()}\n({dist:+d}gg){star}",
-                  fontsize=6.5, ha="center", va="top",
-                  color=fuel_color if bd == selected_tau else "steelblue",
-                  fontweight="bold" if bd == selected_tau else "normal")
-
-    # Legenda manuale
-    from matplotlib.lines import Line2D
-    handles = [
-        Line2D([0],[0], color="#cccccc", lw=1.0, ls="--", label="Break PELT fuori range"),
-        Line2D([0],[0], color="steelblue", lw=1.0, label="Break nel range ±SEARCH"),
-        Line2D([0],[0], color=fuel_color, lw=2.2, label=f"Break scelto ★ {selected_tau.date()} (primo temporale)"),
-        Line2D([0],[0], color="#e74c3c", lw=1.4, ls="--", label=f"Shock {shock.date()}"),
-    ]
-    ax_s.legend(handles=handles, fontsize=7, loc="upper left")
-    ax_s.set_ylabel("€/L", fontsize=8)
-    ax_s.grid(axis="y", alpha=0.20)
-    ax_s.xaxis.set_major_formatter(mdates.DateFormatter("%d %b %y"))
-    ax_s.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0, interval=2))
-    plt.setp(ax_s.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=7)
-
-    # ── Pannello 2: distanza dallo shock per i break nel range ───────────────
-    if filtered_breaks:
-        dists  = [(bd - shock).days for bd in filtered_breaks]
-        colors = [fuel_color if bd == selected_tau else "steelblue"
-                  for bd in filtered_breaks]
-        bars   = ax_d.bar(range(len(filtered_breaks)),
-                          [abs(d) for d in dists],
-                          color=colors, alpha=0.75, edgecolor="white")
-        ax_d.set_xticks(range(len(filtered_breaks)))
-        ax_d.set_xticklabels(
-            [f"{bd.date()}\n({d:+d}gg)" for bd, d in zip(filtered_breaks, dists)],
-            fontsize=7
-        )
-        # Stella sul break scelto
-        sel_idx = filtered_breaks.index(selected_tau)
-        ax_d.scatter([sel_idx], [abs(dists[sel_idx])],
-                     marker="*", s=200, color=fuel_color, zorder=5)
-        ax_d.text(sel_idx, abs(dists[sel_idx]) + 0.3,
-                  "★ scelto\n(primo temporale)", ha="center", fontsize=7,
-                  color=fuel_color, fontweight="bold")
-    else:
-        ax_d.text(0.5, 0.5, "Nessun break PELT nel range ±SEARCH\n→ fallback shock date",
-                  ha="center", va="center", transform=ax_d.transAxes, fontsize=9)
-
-    ax_d.set_ylabel("|giorni dallo shock|", fontsize=8)
-    ax_d.set_xlabel("Break PELT nel range ±SEARCH", fontsize=8)
-    ax_d.grid(axis="y", alpha=0.20)
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    → Detection window plot: {out_path}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -827,12 +645,11 @@ def _plot_its(
 def main() -> None:
     parser = argparse.ArgumentParser(description="V3 ARIMAX/ITS – ITS pipeline")
     parser.add_argument("--mode", choices=["fixed", "detected"], default="fixed",
-                        help="fixed = usa shock date; detected = PELT (ruptures RBF) o window_l2")
-    parser.add_argument("--detect", choices=["margin", "price", "window_l2"], default="margin",
-                        help="(solo mode=detected) metodo/serie: "
+                        help="fixed = usa shock date; detected = θ da theta_results.csv (02c), fallback nativo se CSV assente")
+    parser.add_argument("--detect", choices=["margin", "price"], default="margin",
+                        help="(solo mode=detected) serie di detection: "
                              "margin = PELT sul margine [default], "
-                             "price  = PELT sul prezzo pompa netto, "
-                             "window_l2 = discrepanza L2 con MA-7 (Paper BLOCCO 1 Eq.1–2)")
+                             "price  = PELT sul prezzo pompa netto")
     args, _ = parser.parse_known_args()
     mode          = args.mode
     detect_target = args.detect
@@ -848,18 +665,16 @@ def main() -> None:
     if mode == "fixed":
         print("  T0 = shock date hardcodata (nessuna detection)")
     else:
-        if detect_target == "window_l2":
-            print(f"  T0 = Window L2 Discrepancy (Paper Eq.1–2, MA-7, ricerca ±{SEARCH}gg)")
-        else:
-            print(f"  T0 = PELT (ruptures RBF, pen=2.0, ricerca ±{SEARCH}gg)")
-            print(f"  Detection su: {'MARGINE distributore' if detect_target == 'margin' else 'PREZZO POMPA NETTO'}")
-        if not HAS_RPT and detect_target != "window_l2":
+        print(f"  T0 = PELT (ruptures RBF, pen=2.0, ricerca ±{SEARCH}gg)")
+        print(f"  Detection su: {'MARGINE distributore' if detect_target == 'margin' else 'PREZZO POMPA NETTO'}")
+        if not HAS_RPT:
             print("  ⚠ ruptures non installato → fallback shock date")
     print(f"  statsmodels: {'OK' if HAS_SM else 'MANCANTE'}")
     print(f"  ruptures:    {'OK' if HAS_RPT else 'MANCANTE'}")
     print(f"  Output: {OUT_DIR}")
     print("═"*70)
 
+    # Carica theta lookup (solo mode=detected)
     data = load_margin_data()
     rows: list[dict] = []
 
@@ -875,40 +690,18 @@ def main() -> None:
         for row_idx, (fuel_key, (col_name, fuel_color)) in enumerate(FUELS.items()):
             series = data[col_name].dropna()
 
-            # ── Determina serie di detection ──────────────────────────────────
-            if mode == "detected" and detect_target == "price":
-                detect_series = data[PRICE_COLS[fuel_key]].dropna()
-            else:
-                detect_series = series
-
-            # ── Determina T0 ──────────────────────────────────────────────────
+            # ── Determina T0 — PELT RBF autonomo ─────────────────────────────
             if mode == "detected":
-                if detect_target == "window_l2":
-                    # Paper BLOCCO 1: discrepanza L2 con MA a 7 giorni
-                    bp = detect_breakpoint_window_l2(series, shock)
+                # Scegli la serie su cui fare detection
+                if detect_target == "price":
+                    detect_col    = "benzina_net" if fuel_key == "benzina" else "gasolio_net"
+                    detect_series = data[detect_col].dropna()
                 else:
-                    # PELT (margin o price)
-                    bp = detect_breakpoint_pelt(detect_series, shock)
-
+                    detect_series = series  # margine (default)
+                bp           = detect_breakpoint_pelt(detect_series, shock)
                 t0           = bp["tau"]
                 break_method = bp["method"]
                 n_breaks     = bp.get("n_breaks_total", 0)
-
-                # ── Diagnostic: grafico finestra di detection ─────────────────
-                safe_ev = ev_name.replace(" ","_").replace("/","").replace("(","").replace(")","")
-                det_out = OUT_DIR / f"detect_{safe_ev}_{fuel_key}.png"
-                _plot_detection_window_pelt(
-                    window_series=bp["_window_series"],
-                    shock=shock,
-                    all_breaks=bp["_all_breaks"],
-                    filtered_breaks=bp["_filtered_breaks"],
-                    selected_tau=t0,
-                    fuel_key=fuel_key,
-                    fuel_color=fuel_color,
-                    ev_name=ev_name,
-                    detect_target=detect_target,
-                    out_path=det_out,
-                )
             else:
                 t0           = shock
                 break_method = "fixed_at_shock"
@@ -1027,7 +820,7 @@ def main() -> None:
                 return {
                     "metodo":        "v3_arimax",
                     "mode":          mode,
-                    "detect_target": detect_target if mode == "detected" else "fixed",
+                    "break_method":      break_method,
                     "evento":        ev_name,
                     "carburante":    fuel_key,
                     "shock":         shock.date(),
@@ -1071,7 +864,7 @@ def main() -> None:
                     "is_best":           approach_key == best_key,
                     "transfer_fn":       res["label"],
                     "note": f"ITS/ARIMAX, mode={mode}, break={break_method}"
-                            + (f", detect={detect_target}" if mode == "detected" else ""),
+                            ,
                 })
                 rows.append(row)
 

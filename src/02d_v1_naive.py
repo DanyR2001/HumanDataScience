@@ -14,21 +14,23 @@ Assunzioni (e limitazioni):
 
 Modalità (--mode):
   fixed     : break = data dello shock hardcodata [default]
-  detected  : break rilevato via massimizzazione |Δmean| / pooled_std
-              su finestra scorrevole (sliding mean naive, la detection
-              più semplice possibile — nessuna correzione AR(1) o formale).
-              Tra i break nel top quartile dello score, viene scelto
-              il PRIMO in ordine temporale (inizio ottimale della rottura).
+  detected  : break rilevato con sliding window naïve autonomo
+              (nessuna dipendenza da theta_results.csv / 02c)
 
-Parametro --detect (solo quando --mode detected):
-  margin  : detection sul margine distributore           [default]
+              Algoritmo: per ogni τ in [shock−SEARCH, shock+SEARCH],
+              calcola |mean_pre − mean_post| / pooled_std su finestre
+              fisse di MIN_SEG giorni. Selezione: primo τ nel top quartile
+              dello score (inizio della rottura strutturale).
+
+Parametro --detect (solo mode=detected):
+  margin  : detection sul margine distributore  [default]
   price   : detection sul prezzo alla pompa netto (€/L)
-            → il break viene cercato sul prezzo, ma l'ITS resta sul margine
 
 Output:
-  data/plots/its/{mode}/v1_naive/              (se mode=fixed)
-  data/plots/its/detected/{detect}/v1_naive/   (se mode=detected)
-    plot_{evento}_{carburante}.png
+  data/plots/its/fixed/v1_naive/                    (mode=fixed)
+  data/plots/its/detected/{margin|price}/v1_naive/  (mode=detected)
+    plot_{evento}.png
+    diag_{evento}_{carburante}.png
     v1_naive_results.csv
 """
 
@@ -69,7 +71,7 @@ PRE_WIN   = 60    # giorni pre-break per stimare la baseline
 POST_WIN  = 60    # giorni post-break per calcolare l'extra profitto
 CI_ALPHA  = 0.10  # livello α → intervallo di previsione al 90%
 
-# Detection naive (usata solo in mode=detected)
+# Parametri della sliding window naïve (mode=detected)
 SEARCH    = 30    # ricerca τ in [shock-SEARCH, shock+SEARCH] giorni
 MIN_SEG   = 15    # finestra minima per lato (pre e post) del confronto
 
@@ -101,7 +103,6 @@ FUELS: dict[str, tuple[str, str]] = {
     "gasolio": ("margin_gasolio", "#1D3557"),
 }
 
-# Colonne prezzo pompa netto (usate come serie di detection quando --detect price)
 PRICE_COLS: dict[str, str] = {
     "benzina": "benzina_net",
     "gasolio": "gasolio_net",
@@ -232,191 +233,9 @@ def detect_breakpoint_naive(series: pd.Series, shock: pd.Timestamp) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Break point detection — Window L2 Discrepancy (Paper BLOCCO 1 – Eq. 1–2)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _l2_cost(y: np.ndarray) -> float:
-    """c(y_I) = Σ||y_t − ȳ||² — costo L2 intra-finestra (Paper, Eq. 2)."""
-    if len(y) < 2:
-        return 0.0
-    return float(np.sum((y - y.mean()) ** 2))
-
-
-def detect_breakpoint_window_l2(
-    series: pd.Series,
-    shock: pd.Timestamp,
-    ma_window: int = 7,
-    min_seg: int = 14,
-) -> dict:
-    """
-    Changepoint detection via discrepanza L2 tra due finestre contigue.
-    Implementa il metodo del paper (BLOCCO 1, Eq. 1–2):
-
-        d(y_{uv}, y_{vw}) = c(y_{uw}) − c(y_{uv}) − c(y_{vw})
-        changepoint = argmax_v  d(...)
-
-    Pre-processing: moving average a 7 giorni (obbligatorio nel paper).
-
-    La discrepanza d misura quanto la divisione in v riduce la varianza
-    intra-finestra → il picco di d corrisponde al punto di maggiore
-    omogeneità interna a sinistra e a destra.
-
-    Rispetto al metodo naïve (v=media sliding), questo è più robusto
-    perché non dipende dalla scelta di una finestra fissa per lato:
-    usa l'intera storia disponibile prima e dopo ogni candidato.
-
-    Fallback → shock date se dati insufficienti.
-    """
-    mask = (
-        (series.index >= shock - pd.Timedelta(days=SEARCH)) &
-        (series.index <= shock + pd.Timedelta(days=SEARCH))
-    )
-    win = series[mask].dropna()
-
-    if len(win) < 2 * min_seg + ma_window:
-        return {"tau": shock, "score": 0.0, "method": "window_l2_nofound",
-                "_df": pd.DataFrame(), "_threshold": 0.0}
-
-    # Pre-processing: MA a 7 giorni (centrante)
-    ma = win.rolling(ma_window, center=True, min_periods=1).mean()
-    y  = ma.values
-    n  = len(y)
-
-    c_uw = _l2_cost(y)       # costo dell'intera finestra (costante)
-
-    d_vals: list[float] = []
-    cand_dates: list[pd.Timestamp] = []
-
-    for v in range(min_seg, n - min_seg):
-        d = c_uw - _l2_cost(y[:v]) - _l2_cost(y[v:])
-        d_vals.append(d)
-        cand_dates.append(ma.index[v])
-
-    if not cand_dates:
-        return {"tau": shock, "score": 0.0, "method": "window_l2_nofound",
-                "_df": pd.DataFrame(), "_threshold": 0.0}
-
-    df_c = pd.DataFrame({"tau": cand_dates, "score": d_vals})
-    best = df_c.loc[df_c["score"].idxmax()]
-
-    return {
-        "tau":        best["tau"],
-        "score":      round(float(best["score"]), 6),
-        "method":     "window_l2",
-        "_df":        df_c,
-        "_threshold": float(df_c["score"].max()),
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Diagnostic plot — finestra di selezione del break (mode=detected)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _plot_detection_window(
-    detect_series: pd.Series,
-    shock: pd.Timestamp,
-    df_cands: pd.DataFrame,
-    threshold: float,
-    selected_tau: pd.Timestamp,
-    fuel_key: str,
-    fuel_color: str,
-    ev_name: str,
-    detect_target: str,
-    metric_col: str,
-    metric_label: str,
-    out_path: "Path",
-) -> None:
-    """
-    Salva un grafico diagnostico con due pannelli:
-      · Top   : serie nella finestra di ricerca, tutte le τ candidate,
-                la data di shock e il break selezionato evidenziato.
-      · Bottom: curva dello score/|t| vs τ, soglia 75° percentile,
-                zona top-quartile ombreggiata, break scelto con stella.
-    """
-    if df_cands.empty:
-        return
-
-    win_start = shock - pd.Timedelta(days=SEARCH + MIN_SEG + 5)
-    win_end   = shock + pd.Timedelta(days=SEARCH + MIN_SEG + 5)
-    series_win = detect_series[(detect_series.index >= win_start) &
-                               (detect_series.index <= win_end)]
-
-    fig, (ax_s, ax_m) = plt.subplots(2, 1, figsize=(12, 7),
-                                     gridspec_kw={"height_ratios": [1.6, 1]})
-    fig.suptitle(
-        f"[v1 Naïve – detection finestra]  {ev_name}  ·  {fuel_key.capitalize()}\n"
-        f"Serie: {'prezzo pompa netto' if detect_target == 'price' else ('MA-7 margine dist. (window-L2)' if detect_target == 'window_l2' else 'margine dist.')}"
-        f"  |  Shock: {shock.date()}  |  Break scelto: {selected_tau.date()}"
-        f"  ({(selected_tau - shock).days:+d}gg)",
-        fontsize=9, fontweight="bold"
-    )
-
-    # ── Pannello 1: serie + candidati ────────────────────────────────────────
-    ax_s.plot(series_win.index, series_win.values,
-              color="grey", lw=0.9, alpha=0.7, label=detect_target)
-
-    is_top = df_cands[metric_col] >= threshold
-    for _, row in df_cands[~is_top].iterrows():
-        ax_s.axvline(row["tau"], color="#cccccc", lw=0.4, alpha=0.5)
-    for _, row in df_cands[is_top].iterrows():
-        ax_s.axvline(row["tau"], color=fuel_color, lw=0.6, alpha=0.35)
-
-    ax_s.axvline(shock, color="#e74c3c", lw=1.4, ls="--", label=f"Shock {shock.date()}")
-    ax_s.axvline(selected_tau, color=fuel_color, lw=2.2,
-                 label=f"Break scelto {selected_tau.date()} ({(selected_tau-shock).days:+d}gg)")
-
-    y_rng = series_win.max() - series_win.min() if not series_win.empty else 1
-    y_top = series_win.max() + 0.05 * y_rng if not series_win.empty else 1
-    ax_s.annotate(
-        f"τ = {selected_tau.date()}\n({(selected_tau-shock).days:+d}gg dallo shock)",
-        xy=(selected_tau, y_top),
-        xytext=(10, 0), textcoords="offset points",
-        fontsize=7.5, color=fuel_color, fontweight="bold",
-        arrowprops=dict(arrowstyle="-", color=fuel_color, lw=0.8),
-    )
-    ax_s.set_ylabel("€/L", fontsize=8)
-    ax_s.legend(fontsize=7, loc="upper left")
-    ax_s.grid(axis="y", alpha=0.20)
-    ax_s.xaxis.set_major_formatter(mdates.DateFormatter("%d %b %y"))
-    ax_s.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0, interval=2))
-    plt.setp(ax_s.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=7)
-
-    # ── Pannello 2: curva score vs τ ─────────────────────────────────────────
-    taus   = pd.to_datetime(df_cands["tau"])
-    scores = df_cands[metric_col].values
-
-    ax_m.fill_between(taus, scores, threshold,
-                      where=(scores >= threshold),
-                      alpha=0.18, color=fuel_color, label="Top quartile (≥ 75°p)")
-    ax_m.plot(taus, scores, color="steelblue", lw=1.0, zorder=3)
-    ax_m.axhline(threshold, color="darkorange", lw=1.0, ls="--",
-                 label=f"Soglia 75° pct = {threshold:.3f}")
-    ax_m.axvline(shock, color="#e74c3c", lw=1.2, ls="--", alpha=0.7)
-    ax_m.axvline(selected_tau, color=fuel_color, lw=1.8, alpha=0.9)
-
-    sel_score = float(df_cands.loc[df_cands["tau"] == selected_tau, metric_col].iloc[0]
-                      if not df_cands.loc[df_cands["tau"] == selected_tau].empty
-                      else threshold)
-    ax_m.scatter([selected_tau], [sel_score], marker="*", s=180,
-                 color=fuel_color, zorder=5, label="Scelto (primo nel top quartile)")
-
-    ax_m.set_ylabel(metric_label, fontsize=8)
-    ax_m.set_xlabel("τ candidato", fontsize=8)
-    ax_m.legend(fontsize=7, loc="upper left")
-    ax_m.grid(axis="y", alpha=0.20)
-    ax_m.xaxis.set_major_formatter(mdates.DateFormatter("%d %b %y"))
-    ax_m.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0, interval=2))
-    plt.setp(ax_m.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=7)
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"    → Detection window plot: {out_path}")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # Metodo 1 – OLS Naïve
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def _fit_ols(series: pd.Series, break_date: pd.Timestamp) -> dict | None:
     """
@@ -555,14 +374,16 @@ def _plot_event_fuel(
 def main() -> None:
     parser = argparse.ArgumentParser(description="V1 Naïve OLS – ITS pipeline")
     parser.add_argument("--mode", choices=["fixed", "detected"], default="fixed",
-                        help="fixed = usa shock date; detected = sliding mean naive o window_l2")
-    parser.add_argument("--detect", choices=["margin", "price", "window_l2"], default="margin",
-                        help="(solo mode=detected) serie su cui cercare il break: "
-                             "margin = margine distributore [default], "
-                             "price  = prezzo pompa netto")
+                        help="fixed = usa shock date hardcodata; "
+                             "detected = sliding window naïve autonomo")
+    parser.add_argument("--detect", choices=["margin", "price"],
+                        default="margin",
+                        help="(solo mode=detected) serie su cui fare detection: "
+                             "margin = sliding window sul margine [default], "
+                             "price  = sliding window sul prezzo pompa netto")
     args, _ = parser.parse_known_args()
-    mode         = args.mode
-    detect_target = args.detect  # ignorato se mode == "fixed"
+    mode          = args.mode
+    detect_target = args.detect
 
     if mode == "detected":
         OUT_DIR = _OUT_BASE / "detected" / detect_target / "v1_naive"
@@ -575,7 +396,7 @@ def main() -> None:
     if mode == "fixed":
         print("  Break = shock date hardcodata (nessuna detection)")
     else:
-        print(f"  Break = sliding mean naive  (ricerca ±{SEARCH}gg, finestra min {MIN_SEG}gg)")
+        print(f"  Break = sliding window naïve autonomo  (ricerca ±{SEARCH}gg)")
         print(f"  Detection su: {'MARGINE distributore' if detect_target == 'margin' else 'PREZZO POMPA NETTO'}")
     print(f"  Finestra: PRE={PRE_WIN}gg / POST={POST_WIN}gg dal break point")
     print(f"  Output: {OUT_DIR}")
@@ -598,47 +419,18 @@ def main() -> None:
         for row_idx, (fuel_key, (col_name, fuel_color)) in enumerate(FUELS.items()):
             series = data[col_name].dropna()
 
-            # ── Determina serie di detection ──────────────────────────────────
-            if mode == "detected" and detect_target == "price":
-                detect_series = data[PRICE_COLS[fuel_key]].dropna()
-            else:
-                detect_series = series  # margine (default) o window_l2 usa sempre il margine
-
             # ── Determina break date ──────────────────────────────────────────
             if mode == "detected":
-                # Scelta del metodo di detection basata su --detect
-                if detect_target == "window_l2":
-                    # Paper BLOCCO 1: discrepanza L2 con MA a 7 giorni
-                    bp = detect_breakpoint_window_l2(series, shock)
-                    metric_col   = "score"
-                    metric_label = "Discrepanza L2 d(y_uv, y_vw)"
+                # Seleziona la serie su cui applicare la detection
+                if detect_target == "price":
+                    detect_series = data[PRICE_COLS[fuel_key]].dropna()
                 else:
-                    # Metodo naïve originale (margin o price)
-                    bp = detect_breakpoint_naive(detect_series, shock)
-                    metric_col   = "score"
-                    metric_label = "|Δmean| / pooled_std"
-
+                    detect_series = series  # margine (default)
+                # Sliding window naïve autonomo — nessuna dipendenza esterna
+                bp           = detect_breakpoint_naive(detect_series, shock)
                 break_date   = bp["tau"]
                 break_method = bp["method"]
                 break_score  = bp["score"]
-
-                # ── Diagnostic: grafico finestra di selezione ─────────────────
-                safe_ev  = ev_name.replace(" ","_").replace("/","").replace("(","").replace(")","")
-                det_out  = OUT_DIR / f"detect_{safe_ev}_{fuel_key}.png"
-                _plot_detection_window(
-                    detect_series=detect_series if detect_target != "window_l2" else series,
-                    shock=shock,
-                    df_cands=bp["_df"],
-                    threshold=bp["_threshold"],
-                    selected_tau=break_date,
-                    fuel_key=fuel_key,
-                    fuel_color=fuel_color,
-                    ev_name=ev_name,
-                    detect_target=detect_target,
-                    metric_col=metric_col,
-                    metric_label=metric_label,
-                    out_path=det_out,
-                )
             else:
                 break_date   = shock
                 break_method = "fixed_at_shock"
@@ -728,13 +520,12 @@ def main() -> None:
             rows.append({
                 "metodo":            "v1_naive",
                 "mode":              mode,
-                "detect_target":     detect_target if mode == "detected" else "fixed",
+                "break_method":      break_method,
                 "evento":            ev_name,
                 "carburante":        fuel_key,
                 "shock":             shock.date(),
                 "break_date":        break_date.date(),
-                "break_method":      break_method,
-                "break_score":       round(break_score, 4) if not np.isnan(break_score) else np.nan,
+                "break_score_naive": round(break_score, 4) if not np.isnan(break_score) else np.nan,
                 "pre_win_days":      PRE_WIN,
                 "post_win_days":     POST_WIN,
                 "n_pre":             len(pre_data),
@@ -755,8 +546,7 @@ def main() -> None:
                 "bg_stat":           round(diag.get("bg_stat", np.nan), 3),
                 "bg_p":              round(diag.get("bg_p", np.nan), 4),
                 "diag_n_lags":       diag.get("n_lags", np.nan),
-                "note": f"OLS naïve, residui i.i.d., mode={mode}"
-                        + (f", detect={detect_target}" if mode == "detected" else ""),
+                "note":              f"OLS naïve, residui i.i.d., mode={mode}",
             })
 
         fig.tight_layout()

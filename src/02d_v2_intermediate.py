@@ -39,9 +39,9 @@ MODELLO 2 — GLM Poisson con link logaritmico
 
 ────────────────────────────────────────────────────────────────────────
 Break point detection (--mode detected):
-  margin    : sliding t-test Welch con correzione AR(1) sul margine
-  price     : sliding t-test Welch con correzione AR(1) sul prezzo netto
-  window_l2 : discrepanza L2 con MA-7 (Paper BLOCCO 1, Eq. 1–2) sul margine
+  margin    : Window L2 Discrepancy (paper, Eq. 1–2) sul margine distributore
+  price     : Window L2 Discrepancy (paper, Eq. 1–2) sul prezzo pompa netto
+  Detection autonoma — non dipende da theta_results.csv / 02c.
 
 Output:
   data/plots/its/{mode}/v2_intermediate/              (se mode=fixed)
@@ -89,8 +89,7 @@ _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
 PRE_WIN   = 60    # giorni pre per stimare baseline
 POST_WIN  = 60    # giorni post per calcolare l'extra profitto
 SEARCH    = 30    # ricerca break ±SEARCH giorni dallo shock (mode=detected)
-HALF_WIN  = 40    # finestra del sliding t-test (lato sinistro e destro)
-STEP      = 1     # passo del candidato τ (giorni)
+HALF_WIN  = 30    # semi-finestra del Chow test intorno al break (giorni per lato)
 CI_ALPHA  = 0.10  # α → CI/PI al 90%
 POISSON_EPS = 1e-4  # epsilon per lo shift Poisson (€/L)
 
@@ -178,146 +177,74 @@ def load_margin_data() -> pd.DataFrame:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Break point detection — Sliding t-test AR(1) (mode=detected)
+# Break point detection — Window L2 Discrepancy (Paper BLOCCO 1, Eq. 1–2)
+# Questo è il metodo canonico del paper (lo stesso usato da 02c per produrre θ),
+# ora implementato autonomamente in v2 senza dipendere da theta_results.csv.
+#
+# Per ogni candidato v ∈ [u + min_seg, w − min_seg]:
+#   d(y_uv, y_vw) = c(y_uw) − c(y_uv) − c(y_vw)
+#   dove c(y_I) = Σ_{t∈I} ||y_t − ȳ||²  (costo L2 intra-finestra)
+# θ = argmax_v  d(...)
+# Pre-processing: moving average a 7 giorni per ridurre il rumore.
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _phi_ar1(s: pd.Series) -> float:
-    if len(s) < 4 or s.std() < 1e-12:
-        return 0.0
-    v = s.values - s.mean()
-    return float(np.clip(np.corrcoef(v[:-1], v[1:])[0, 1], -0.99, 0.99))
+MA_WIN   = 7    # finestra moving average per pre-processing (Paper)
+MIN_SEG  = 14   # segmento minimo per lato (giorni)
 
 
-def _n_eff(n: int, phi: float) -> float:
-    return max(2.0, n * (1 - phi) / (1 + phi))
-
-
-def _welch_ar1(pre: pd.Series, post: pd.Series) -> tuple[float, float]:
-    phi1, phi2 = _phi_ar1(pre), _phi_ar1(post)
-    n1, n2 = _n_eff(len(pre), phi1), _n_eff(len(post), phi2)
-    m1, m2 = float(pre.mean()), float(post.mean())
-    v1 = float(pre.var(ddof=1)) / n1
-    v2 = float(post.var(ddof=1)) / n2
-    se = np.sqrt(v1 + v2)
-    if se < 1e-12:
-        return 0.0, 1.0
-    t = (m2 - m1) / se
-    df = (v1 + v2)**2 / (v1**2/(n1-1) + v2**2/(n2-1))
-    return float(t), float(2 * stats.t.sf(abs(t), df=max(1, df)))
-
-
-def detect_breakpoint(series: pd.Series, shock: pd.Timestamp) -> dict:
-    """
-    Sliding t-test Welch con correzione AR(1) per n_eff.
-    Cerca τ in [shock-SEARCH, shock+SEARCH].
-    Selezione: primo nel top quartile del |t| (inizio della rottura).
-    """
-    idx  = series.index
-    rows = []
-    candidates = pd.date_range(
-        shock - pd.Timedelta(days=SEARCH),
-        shock + pd.Timedelta(days=SEARCH),
-        freq=f"{STEP}D",
-    )
-    for tau in candidates:
-        pre  = series[(idx >= tau - pd.Timedelta(days=HALF_WIN)) & (idx < tau)].dropna()
-        post = series[(idx >= tau) & (idx < tau + pd.Timedelta(days=HALF_WIN))].dropna()
-        if len(pre) < 5 or len(post) < 5:
-            continue
-        t, p = _welch_ar1(pre, post)
-        rows.append({"tau": tau, "t": t, "p_raw": p,
-                     "delta": post.mean() - pre.mean(),
-                     "abs_t": abs(t),
-                     "dist":  abs((tau - shock).days)})
-
-    if not rows:
-        return {"tau": shock, "t": 0.0, "p_bonf": 1.0, "delta": 0.0,
-                "method": "sliding_ttest_ar1_nofound",
-                "_df": pd.DataFrame(), "_threshold": 0.0}
-
-    df_c = pd.DataFrame(rows)
-    df_c["p_bonf"] = (df_c["p_raw"] * len(df_c)).clip(upper=1.0)
-
-    threshold = float(np.percentile(df_c["abs_t"], 75))
-    top = df_c[df_c["abs_t"] >= threshold]
-    if top.empty:
-        top = df_c
-    best = top.sort_values("tau").iloc[0]
-
-    return {"tau": best["tau"], "t": best["t"],
-            "p_bonf": best["p_bonf"], "delta": best["delta"],
-            "method": "sliding_ttest_ar1",
-            "_df":        df_c,
-            "_threshold": threshold,
-            }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Break point detection — Window L2 Discrepancy (Paper BLOCCO 1 – Eq. 1–2)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _l2_cost_v2(y: np.ndarray) -> float:
-    """c(y_I) = Σ||y_t − ȳ||² — costo L2 intra-finestra (Paper, Eq. 2)."""
+def _l2_cost(y: np.ndarray) -> float:
+    """c(y_I) = Σ ||y_t − ȳ||²   (Paper, Eq. 2)"""
     if len(y) < 2:
         return 0.0
     return float(np.sum((y - y.mean()) ** 2))
 
 
-def detect_breakpoint_window_l2(
-    series: pd.Series,
-    shock: pd.Timestamp,
-    ma_window: int = 7,
-    min_seg: int   = 14,
-) -> dict:
+def detect_breakpoint(series: pd.Series, shock: pd.Timestamp) -> dict:
     """
-    Changepoint via discrepanza L2 tra due finestre contigue (Paper BLOCCO 1).
-        d(y_{uv}, y_{vw}) = c(y_{uw}) − c(y_{uv}) − c(y_{vw})
-        changepoint = argmax_v  d(...)
-    Pre-processing: MA a 7 giorni. Serie operativa: margine (sempre).
+    Window L2 Discrepancy (Paper BLOCCO 1, Eq. 1–2).
+    Cerca τ in [shock-SEARCH, shock+SEARCH].
+
+    Selezione: argmax della discrepanza d(v) — il picco coincide con il
+    punto in cui la serie è massimamente disomogenea tra i due segmenti.
+    Selezione del primo candidato nel top-quartile per catturare l'inizio
+    della rottura strutturale.
     """
-    mask = (
-        (series.index >= shock - pd.Timedelta(days=SEARCH)) &
-        (series.index <= shock + pd.Timedelta(days=SEARCH))
-    )
+    mask = (series.index >= shock - pd.Timedelta(days=SEARCH)) & \
+           (series.index <= shock + pd.Timedelta(days=SEARCH))
     win = series[mask].dropna()
 
-    if len(win) < 2 * min_seg + ma_window:
-        return {"tau": shock, "t": 0.0, "p_bonf": 1.0, "delta": 0.0,
-                "method": "window_l2_nofound",
-                "_df": pd.DataFrame(), "_threshold": 0.0}
+    fallback = {"tau": shock, "d_max": 0.0, "method": "window_l2_nofound",
+                "_df": pd.DataFrame()}
 
-    ma = win.rolling(ma_window, center=True, min_periods=1).mean()
-    y  = ma.values
-    n  = len(y)
-    c_uw = _l2_cost_v2(y)
+    if len(win) < 2 * MIN_SEG + MA_WIN:
+        return fallback
 
-    d_vals: list[float] = []
-    cand_dates: list[pd.Timestamp] = []
-    for v in range(min_seg, n - min_seg):
-        d = c_uw - _l2_cost_v2(y[:v]) - _l2_cost_v2(y[v:])
-        d_vals.append(d)
-        cand_dates.append(ma.index[v])
+    # Pre-processing: smoothing MA-7
+    ma  = win.rolling(MA_WIN, center=True, min_periods=1).mean()
+    y   = ma.values
+    n   = len(y)
+    c_uw = _l2_cost(y)
 
-    if not cand_dates:
-        return {"tau": shock, "t": 0.0, "p_bonf": 1.0, "delta": 0.0,
-                "method": "window_l2_nofound",
-                "_df": pd.DataFrame(), "_threshold": 0.0}
+    rows = []
+    for v in range(MIN_SEG, n - MIN_SEG):
+        d = c_uw - _l2_cost(y[:v]) - _l2_cost(y[v:])
+        rows.append({"tau": ma.index[v], "d": d})
 
-    df_c     = pd.DataFrame({"tau": cand_dates, "abs_t": d_vals})
-    best_idx = df_c["abs_t"].idxmax()
-    best     = df_c.loc[best_idx]
-    tau_date = best["tau"]
-    pre_m    = float(series[series.index < tau_date].tail(HALF_WIN).mean())
-    post_m   = float(series[series.index >= tau_date].head(HALF_WIN).mean())
+    if not rows:
+        return {**fallback}
+
+    df_c = pd.DataFrame(rows)
+    threshold = float(np.percentile(df_c["d"], 75))
+    top = df_c[df_c["d"] >= threshold]
+    if top.empty:
+        top = df_c
+    best = top.sort_values("tau").iloc[0]
 
     return {
-        "tau":        tau_date,
-        "t":          float(best["abs_t"]),
-        "p_bonf":     np.nan,
-        "delta":      post_m - pre_m,
-        "method":     "window_l2",
-        "_df":        df_c,
-        "_threshold": float(df_c["abs_t"].max()),
+        "tau":    best["tau"],
+        "d_max":  round(float(df_c["d"].max()), 6),
+        "method": "window_l2_discrepancy",
+        "_df":    df_c,
     }
 
 
@@ -335,15 +262,18 @@ def _plot_detection_window(
     fuel_color: str,
     ev_name: str,
     detect_target: str,
-    metric_col: str,
-    metric_label: str,
     out_path: Path,
 ) -> None:
+    """Plot diagnostico della finestra di detection (Window L2 Discrepancy)."""
     if df_cands.empty:
         return
 
-    win_start  = shock - pd.Timedelta(days=SEARCH + HALF_WIN + 5)
-    win_end    = shock + pd.Timedelta(days=SEARCH + HALF_WIN + 5)
+    # La colonna della metrica è "d" (discrepanza L2)
+    metric_col   = "d"
+    metric_label = "d(y_uv, y_vw)  [discrepanza L2]"
+
+    win_start  = shock - pd.Timedelta(days=SEARCH + 15)
+    win_end    = shock + pd.Timedelta(days=SEARCH + 15)
     series_win = detect_series[(detect_series.index >= win_start) &
                                (detect_series.index <= win_end)]
 
@@ -790,12 +720,11 @@ def _plot_event_fuel(
 def main() -> None:
     parser = argparse.ArgumentParser(description="V2 OLS HAC + GLM Poisson – ITS pipeline")
     parser.add_argument("--mode", choices=["fixed", "detected"], default="fixed",
-                        help="fixed = usa shock date; detected = sliding t-test AR(1) o window_l2")
-    parser.add_argument("--detect", choices=["margin", "price", "window_l2"], default="margin",
-                        help="(solo mode=detected) metodo/serie di detection: "
+                        help="fixed = usa shock date; detected = sliding t-test AR(1)")
+    parser.add_argument("--detect", choices=["margin", "price"], default="margin",
+                        help="(solo mode=detected) serie di detection: "
                              "margin = sliding t-test AR(1) sul margine [default], "
-                             "price  = sliding t-test AR(1) sul prezzo pompa netto, "
-                             "window_l2 = discrepanza L2 con MA-7 (Paper BLOCCO 1)")
+                             "price  = sliding t-test AR(1) sul prezzo pompa netto")
     args, _ = parser.parse_known_args()
     mode          = args.mode
     detect_target = args.detect
@@ -840,43 +769,37 @@ def main() -> None:
             if mode == "detected" and detect_target == "price":
                 detect_series = data[PRICE_COLS[fuel_key]].dropna()
             else:
-                detect_series = series  # margine (default) o window_l2
+                detect_series = series  # margine (default)
 
-            # ── Determina break date ──────────────────────────────────────────
+            # ── Determina break date — Window L2 Discrepancy (paper) ──────────
             if mode == "detected":
-                if detect_target == "window_l2":
-                    bp = detect_breakpoint_window_l2(series, shock)
-                    metric_col   = "abs_t"
-                    metric_label = "Discrepanza L2 d(y_uv,y_vw)"
-                else:
-                    bp = detect_breakpoint(detect_series, shock)
-                    metric_col   = "abs_t"
-                    metric_label = "|t| Welch AR(1)"
+                bp = detect_breakpoint(detect_series, shock)
 
                 break_date   = bp["tau"]
-                delta        = bp["delta"]
-                p_bonf       = bp["p_bonf"]
-                t_stat       = bp["t"]
+                d_max        = bp["d_max"]
                 break_method = bp["method"]
+                delta        = 0.0    # non calcolato da L2 (è d_max la metrica)
+                p_bonf       = np.nan  # L2 non produce p-value
+                t_stat       = np.nan
 
                 safe_ev = ev_name.replace(" ","_").replace("/","").replace("(","").replace(")","")
                 det_out = OUT_DIR / f"detect_{safe_ev}_{fuel_key}.png"
                 _plot_detection_window(
-                    detect_series=series if detect_target == "window_l2" else detect_series,
+                    detect_series=detect_series,
                     shock=shock,
                     df_cands=bp["_df"],
-                    threshold=bp["_threshold"],
+                    threshold=float(np.percentile(bp["_df"]["d"], 75))
+                              if not bp["_df"].empty else 0.0,
                     selected_tau=break_date,
                     fuel_key=fuel_key,
                     fuel_color=fuel_color,
                     ev_name=ev_name,
                     detect_target=detect_target,
-                    metric_col=metric_col,
-                    metric_label=metric_label,
                     out_path=det_out,
                 )
             else:
                 break_date   = shock
+                d_max        = np.nan
                 delta        = 0.0
                 p_bonf       = np.nan
                 t_stat       = np.nan
@@ -948,11 +871,10 @@ def main() -> None:
             )
 
             # ── Stampa a video ────────────────────────────────────────────────
-            sig_str = "★ sig." if (not np.isnan(p_bonf) and p_bonf < 0.05) else "– n.s."
             print(f"\n  {ev_name}  [{fuel_key.upper()}]")
             print(f"    Break ({break_method}) = {break_date.date()}  (shock={shock.date()})")
             if mode == "detected":
-                print(f"    t AR(1)-corretto  = {t_stat:+.2f}   p_bonf={p_bonf:.3f}  {sig_str}")
+                print(f"    L2 d_max          = {d_max:.6f}  (Window L2 Discrepancy)")
             print(f"    OLS R²            = {info_ols['r2']:.3f}   "
                   f"DW = {info_ols.get('dw', float('nan')):.2f}")
             if not np.isnan(chow.get("F", np.nan)):
@@ -988,6 +910,8 @@ def main() -> None:
                 "shock":             shock.date(),
                 "break_date":        break_date.date(),
                 "break_method":      break_method,
+                "detection_algo":    "window_l2_discrepancy",
+                "l2_d_max":          round(d_max, 6) if not np.isnan(d_max) else np.nan,
                 "pre_win_days":      PRE_WIN,
                 "post_win_days":     POST_WIN,
                 "n_pre":             len(info_ols["pre"]),
@@ -1000,8 +924,8 @@ def main() -> None:
                 "gain_ci_high_meur": round(gain_ci_high, 1),
                 "r2_ols":            round(info_ols["r2"], 4),
                 "slope_eurl_day":    round(info_ols["slope"], 6),
-                "t_stat_ar1":        round(t_stat, 3) if not np.isnan(t_stat) else np.nan,
-                "p_bonf_ar1":        round(p_bonf, 4) if not np.isnan(p_bonf) else np.nan,
+                "t_stat_ar1":        np.nan,   # non calcolato da L2
+                "p_bonf_ar1":        np.nan,   # non calcolato da L2
                 "chow_F":            round(chow.get("F", np.nan), 3),
                 "chow_p":            round(chow.get("p", np.nan), 4),
                 "dw_stat":           round(info_ols.get("dw", np.nan), 3),

@@ -1,46 +1,45 @@
 #!/usr/bin/env python3
 """
-02_change_point_detection_margin.py
-=====================================
+02c_change_point_detection.py
+==============================
 Change-point detection sul MARGINE (prezzo netto pompa − futures €/L)
 benzina e gasolio in corrispondenza di eventi geopolitici rilevanti.
 
-Metodologia — Rasoio di Occam (dal più semplice al più sofisticato)
-────────────────────────────────────────────────────────────────────
-  L1 · Sliding-window two-sample t-test
-       Finestra di HALF_WIN=40 giorni per lato; il punto di rottura τ
-       scorre da –SEARCH giorni a +SEARCH giorni rispetto all'evento
-       con step=1 (risoluzione giornaliera). Correzione p-value: Bonferroni.
-       → restituisce 1 break point (il più forte).
+Output primario
+───────────────
+  theta_results.csv — una riga per evento × carburante con:
+    θ (break canonico via metodo del paper), d_max, theta_confirmed.
+  Questo file è la fonte di verità consumata dagli script ITS downstream
+  quando operano in modalità detected.
 
-  L2 · CUSUM (Cumulative SUM of deviations)
-       Deviazione cumulata dalla media pre-evento sul livello di prezzo.
-       Picco/valle = momento di rottura strutturale. Semplice, visivo.
-       → 1 break point.
+Metodo canonico — θ via Window Discrepancy L2  (Paper BLOCCO 1, Eq. 1–2)
+──────────────────────────────────────────────────────────────────────────
+  Pre-processing: moving average a 7 giorni sulla serie del margine.
 
-  L3 · Binary Segmentation (ruptures – BinSeg, costo L2)
-       Cerca esattamente N break points; usa BIC per scegliere N ottimale
-       tra 1 e MAX_BKPS. → potenzialmente MULTIPLI break point.
+  Per ogni candidato v ∈ [shock−SEARCH, shock+SEARCH]:
+    d(y_{uv}, y_{vw}) = c(y_{uw}) − c(y_{uv}) − c(y_{vw})
+  dove c(y_I) = Σ_{t∈I} ||y_t − ȳ||² (costo L2 intra-finestra).
 
-  L4 · PELT – Pruned Exact Linear Time (ruptures, penalizzazione BIC)
-       Soluzione globale esatta con N incognito; O(n log n).
-       → potenzialmente MULTIPLI break point.
+  θ = argmax_v  d(y_{uv}, y_{vw})
 
-Finestra ottimale e CLT
-────────────────────────
-  Prezzi giornalieri: autocorrelazione AR(1) con φ ≈ 0.2–0.3.
-  Dimensione effettiva del campione: n_eff ≈ n·(1-φ)/(1+φ).
-  Con φ=0.3 → n_eff = n·0.54.
-  Per n_eff ≥ 30 (CLT solido) serve n ≥ 56 → uso HALF_WIN=40 (minimo
-  pratico, n_eff≈22) con la consapevolezza che il test t è approssimato.
-  Se vuoi CLT garantito imposta HALF_WIN=60.
+  La discrepanza d misura quanto v divide la finestra in due segmenti
+  omogenei internamente ma diversi tra loro.  Picco di d → break ottimale.
 
-  Sliding step = 1 giorno (risoluzione massima, 2·SEARCH+1 test totali;
-  si applica correzione Bonferroni sui p-value).
-  Step = 7 riduce il multiple testing ma perde risoluzione infrasettimanale.
+  theta_confirmed = True se θ cade entro ±7 giorni da almeno un break
+  rilevato da L3 (BinSeg BIC) o L4 (PELT).  Flag diagnostico, non bloccante.
 
-Dipendenze extra:
-  pip install ruptures
+Metodi di supporto (cross-validazione, non producono θ)
+────────────────────────────────────────────────────────
+  L1 · Sliding-window Welch t-test con correzione AR(1) e Bonferroni
+  L2 · CUSUM delle deviazioni dalla media pre-evento
+  L3 · Binary Segmentation (BinSeg, costo RBF, selezione BIC)
+  L4 · PELT – Pruned Exact Linear Time (penalizzazione BIC)
+
+  L1–L4 sono visualizzati nel grafico diagnostico come evidenza di
+  convergenza, ma non sostituiscono θ.
+
+Dipendenze:
+  pip install ruptures statsmodels
 """
 
 from __future__ import annotations
@@ -304,102 +303,92 @@ def pelt_detect(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# L5 – Window-based L2 Discrepancy  (Paper BLOCCO 1 – Eq. 1–2)
+# θ — Window Discrepancy L2  (Paper BLOCCO 1, Eq. 1–2)
+# Metodo canonico per la stima del break point.
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _l2_cost(y: np.ndarray) -> float:
     """
-    Funzione di costo intra-finestra (Paper, Eq. 2):
-        c(y_I) = Σ_{t∈I} ||y_t − ȳ||²₂
-    Equivale alla varianza pesata per n: misura la dispersione interna
-    alla finestra I. Assunzione gaussiana (costo L2 quadratico).
+    Costo intra-finestra L2 (Paper, Eq. 2):
+        c(y_I) = Σ_{t∈I} ||y_t − ȳ||²
+    Misura la dispersione interna al segmento I.
     """
     if len(y) < 2:
         return 0.0
     return float(np.sum((y - y.mean()) ** 2))
 
 
-def window_discrepancy_l2(
+def detect_theta(
     series: pd.Series,
     shock: pd.Timestamp,
-    search: int   = SEARCH,
+    search: int    = SEARCH,
     ma_window: int = 7,
     min_seg: int   = 14,
 ) -> dict:
     """
-    Changepoint detection via discrepanza L2 tra due finestre contigue (Paper, Eq. 1–2).
+    Stima il break canonico θ via massimizzazione della discrepanza L2
+    tra due finestre contigue (Paper BLOCCO 1, Eq. 1–2).
 
-    Pre-processing obbligatorio (Paper): moving average a 7 giorni.
+    Pre-processing: moving average a `ma_window` giorni (default 7) per
+    ridurre il rumore giornaliero prima del calcolo della discrepanza.
 
-    Algoritmo:
-      Per ogni candidato v ∈ [u+min_seg, w−min_seg]:
+    Per ogni candidato v ∈ [u + min_seg, w − min_seg]:
         d(y_{uv}, y_{vw}) = c(y_{uw}) − c(y_{uv}) − c(y_{vw})
-      Changepoint = argmax_v  d(...)
 
-    La discrepanza d misura quanto v divide la serie in due segmenti
-    omogenei al loro interno ma diversi tra loro. Picco di d → break.
+    θ = argmax_v  d(...)
 
-    Validazione BIC: il changepoint L5 è attendibile se coincide
-    (entro ±7gg) con almeno uno dei break trovati da L3 BinSeg o L4 PELT.
+    Il flag `theta_confirmed` è impostato dal chiamante dopo aver eseguito
+    L3/L4: True se θ cade entro ±7 giorni da almeno un break BIC.
+    È un indicatore diagnostico di convergenza, non una condizione bloccante.
 
     Returns
     -------
-    dict con:
-      tau       – data del changepoint rilevato
-      d_max     – valore massimo della discrepanza
-      d_values  – pd.Series(d, index=candidate_dates)
-      ma_series – serie dopo MA a 7 giorni (per plot)
-      bic_ok    – bool: il changepoint è in accordo con L3/L4
+    dict:
+      theta            – pd.Timestamp: break canonico
+      d_max            – float: valore massimo della discrepanza
+      d_values         – pd.Series: curva d(v) su tutte le date candidate
+      ma_series        – pd.Series: serie dopo smoothing MA
+      theta_confirmed  – bool: inizialmente False, aggiornato in plot_event_fuel
     """
-    # Slice nella finestra di ricerca
     mask = (series.index >= shock - pd.Timedelta(days=search)) & \
            (series.index <= shock + pd.Timedelta(days=search))
     win = series[mask].dropna()
 
-    if len(win) < 2 * min_seg + ma_window:
-        return {
-            "tau": shock, "d_max": 0.0,
-            "d_values": pd.Series(dtype=float),
-            "ma_series": pd.Series(dtype=float),
-            "bic_ok": False,
-        }
+    _fallback = {
+        "theta": shock, "d_max": 0.0,
+        "d_values": pd.Series(dtype=float),
+        "ma_series": pd.Series(dtype=float),
+        "theta_confirmed": False,
+    }
 
-    # Pre-processing: MA a 7 giorni (centrante, min_periods=1 per i bordi)
+    if len(win) < 2 * min_seg + ma_window:
+        return _fallback
+
     ma = win.rolling(ma_window, center=True, min_periods=1).mean()
     y  = ma.values
     n  = len(y)
-
-    # c(y_{uw}) — costo dell'intera finestra (costante nel loop)
     c_uw = _l2_cost(y)
 
-    # Scan su tutti i candidati v
-    d_vals: list[float] = []
-    cand_dates: list[pd.Timestamp] = []
+    d_vals:     list[float]          = []
+    cand_dates: list[pd.Timestamp]   = []
 
     for v in range(min_seg, n - min_seg):
-        c_uv = _l2_cost(y[:v])
-        c_vw = _l2_cost(y[v:])
-        d    = c_uw - c_uv - c_vw
+        d = c_uw - _l2_cost(y[:v]) - _l2_cost(y[v:])
         d_vals.append(d)
         cand_dates.append(ma.index[v])
 
     if not cand_dates:
-        return {
-            "tau": shock, "d_max": 0.0,
-            "d_values": pd.Series(dtype=float),
-            "ma_series": ma,
-            "bic_ok": False,
-        }
+        return {**_fallback, "ma_series": ma}
 
     d_series = pd.Series(d_vals, index=cand_dates)
-    best_tau = d_series.idxmax()
+    theta    = d_series.idxmax()
 
     return {
-        "tau":       best_tau,
-        "d_max":     float(d_series.max()),
-        "d_values":  d_series,
-        "ma_series": ma,
-        "bic_ok":    False,   # aggiornato in plot_event_fuel dopo L3/L4
+        "theta":           theta,
+        "d_max":           float(d_series.max()),
+        "d_values":        d_series,
+        "ma_series":       ma,
+        "theta_confirmed": False,   # aggiornato in plot_event_fuel
     }
 
 
@@ -412,116 +401,175 @@ def plot_event_fuel(
     series: pd.Series,
     fuel_label: str,
     fuel_color: str,
-    ax_price:  plt.Axes,
-    ax_cusum:  plt.Axes,
-    ax_tstat:  plt.Axes,
-    ax_bic:    plt.Axes,
-    ax_l5:     plt.Axes | None = None,
+    ax_theta:  plt.Axes,   # pannello 1: θ discrepanza L2  (canonico)
+    ax_price:  plt.Axes,   # pannello 2: serie margine + tutte le linee break
+    ax_cusum:  plt.Axes,   # pannello 3: CUSUM
+    ax_tstat:  plt.Axes,   # pannello 4: sliding t-stat (L1, supporto)
+    ax_bic:    plt.Axes,   # pannello 5: BIC curve BinSeg (L3, supporto)
 ) -> dict:
-    """Disegna i 4+1 pannelli per un singolo carburante e restituisce risultati."""
+    """
+    Disegna i 5 pannelli diagnostici per un singolo carburante.
 
-    # ── Slice della finestra ──────────────────────────────────────────────────
+    Pannello 1 — θ canonico (metodo del paper):
+      Curva d(v), picco = θ.  L3/L4 annotati per convergenza.
+
+    Pannelli 2–5 — metodi di supporto L1–L4:
+      Contestualizzano θ; non producono un break alternativo.
+
+    Restituisce dict con chiave primaria `theta` e chiavi secondarie L1–L4.
+    """
+
     win = series[(series.index >= ev["pre_start"]) &
                  (series.index <= ev["post_end"])].dropna()
     if len(win) < 2 * HALF_WIN:
-        ax_price.set_title(f"{fuel_label} – dati insufficienti", fontsize=9)
+        ax_theta.set_title(f"{fuel_label} – dati insufficienti", fontsize=9)
         return {}
 
     shock = ev["shock"]
     color = fuel_color
 
-    # ── L1: sliding t-test ────────────────────────────────────────────────────
-    ttest_df = sliding_ttest(win, shock)
-    best_tau = ttest_df.iloc[0]["tau"]   if not ttest_df.empty else shock
-    best_t   = ttest_df.iloc[0]["t_stat"] if not ttest_df.empty else 0
-    best_p   = ttest_df.iloc[0]["p_bonf"] if not ttest_df.empty else 1
-    delta    = ttest_df.iloc[0]["delta_mean"] if not ttest_df.empty else 0
+    # ── θ: metodo canonico del paper ─────────────────────────────────────────
+    theta_res = detect_theta(win, shock, search=SEARCH)
 
-    # ── L2: CUSUM ─────────────────────────────────────────────────────────────
+    # ── L1: sliding t-test (supporto) ────────────────────────────────────────
+    ttest_df = sliding_ttest(win, shock)
+    l1_tau   = ttest_df.iloc[0]["tau"]        if not ttest_df.empty else shock
+    l1_t     = ttest_df.iloc[0]["t_stat"]     if not ttest_df.empty else 0.0
+    l1_p     = ttest_df.iloc[0]["p_bonf"]     if not ttest_df.empty else 1.0
+    l1_delta = ttest_df.iloc[0]["delta_mean"] if not ttest_df.empty else 0.0
+
+    # ── L2: CUSUM (supporto) ─────────────────────────────────────────────────
     cs, cusum_peak = cusum(win, shock)
 
-    # ── L3: BinSeg ───────────────────────────────────────────────────────────
-    binseg_res = binseg_detect(win)
+    # ── L3: BinSeg (supporto + conferma θ) ───────────────────────────────────
+    binseg_res  = binseg_detect(win)
     binseg_best = binseg_res.get("best", [])
 
-    # ── L4: PELT ─────────────────────────────────────────────────────────────
+    # ── L4: PELT (supporto + conferma θ) ─────────────────────────────────────
     pelt_breaks = pelt_detect(win)
 
-    # ── L5: Window discrepancy L2 (Paper BLOCCO 1 – Eq. 1–2) ─────────────────
-    l5_res = window_discrepancy_l2(win, shock, search=SEARCH)
-    # Validazione BIC: L5 è attendibile se coincide (±7gg) con L3 o L4
-    _all_bic_breaks = binseg_best + pelt_breaks
-    if _all_bic_breaks and l5_res["d_values"] is not None and not l5_res["d_values"].empty:
-        l5_res["bic_ok"] = any(
-            abs((l5_res["tau"] - b).days) <= 7 for b in _all_bic_breaks
+    # ── Aggiorna theta_confirmed ──────────────────────────────────────────────
+    all_bic_breaks = binseg_best + pelt_breaks
+    theta = theta_res["theta"]
+    if all_bic_breaks and not theta_res["d_values"].empty:
+        theta_res["theta_confirmed"] = any(
+            abs((theta - b).days) <= 7 for b in all_bic_breaks
+        )
+
+    confirmed = theta_res["theta_confirmed"]
+    conf_tag  = "✓ confermato L3/L4" if confirmed else "⚠ non in accordo L3/L4"
+
+    # ════ PANNELLO 1: θ — curva discrepanza L2  (canonico) ════════════════════
+    d_vals = theta_res["d_values"]
+    ma_ser = theta_res["ma_series"]
+
+    if not d_vals.empty:
+        ax_theta.plot(d_vals.index, d_vals.values, color=color, lw=1.1,
+                      label="d(y_uv, y_vw)")
+        ax_theta.axhline(0, color="grey", lw=0.6, ls="-")
+        ax_theta.axvline(shock, color=ev["color"], lw=1.5, ls="--", label="Shock")
+        ax_theta.axvline(theta, color=color, lw=2.0, ls="-",
+                         label=f"θ = {theta.date()}  ({conf_tag})")
+        ax_theta.scatter([theta], [d_vals.max()], color=color, s=80,
+                         zorder=5, marker="*")
+        # Annota anche i break L3/L4 sulla stessa curva per leggere la convergenza
+        for i, b in enumerate(pelt_breaks):
+            if b in d_vals.index or d_vals.index.min() <= b <= d_vals.index.max():
+                ax_theta.axvline(b, color="green", lw=0.9, ls=":",
+                                 alpha=0.7, label="L4 PELT" if i == 0 else "")
+        for i, b in enumerate(binseg_best):
+            if d_vals.index.min() <= b <= d_vals.index.max():
+                ax_theta.axvline(b, color="purple", lw=0.9, ls=":",
+                                 alpha=0.7, label="L3 BinSeg" if i == 0 else "")
+        ax_theta.set_ylabel("d (€/L)²", fontsize=8)
+        ax_theta.legend(fontsize=6, loc="upper left", ncol=2)
+        conf_color = "#2ecc71" if confirmed else "#e67e22"
+        ax_theta.set_title(
+            f"θ = {theta.date()}   d_max = {theta_res['d_max']:.4f}   {conf_tag}",
+            fontsize=8, fontweight="bold", pad=3, color=conf_color,
         )
     else:
-        l5_res["bic_ok"] = False
+        ax_theta.text(0.5, 0.5, "θ: dati insufficienti",
+                      ha="center", va="center", transform=ax_theta.transAxes, fontsize=8)
+    ax_theta.grid(alpha=0.25)
+    ax_theta.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
 
-    # ════ PANNELLO 1: prezzi + break lines  (zoom ZOOM_WIN gg attorno a τ) ═════
-    # Centrato su τ (break rilevato), non sullo shock: mostra esattamente
-    # la transizione pre→post. Cambia ZOOM_WIN in cima al file per allargare.
-    zoom_start = best_tau - pd.Timedelta(days=ZOOM_WIN)
-    zoom_end   = best_tau + pd.Timedelta(days=ZOOM_WIN)
+    # ════ PANNELLO 2: serie margine + zoom intorno a θ  (tutte le linee) ═════
+    zoom_start = theta - pd.Timedelta(days=ZOOM_WIN)
+    zoom_end   = theta + pd.Timedelta(days=ZOOM_WIN)
     win_zoom   = win[(win.index >= zoom_start) & (win.index <= zoom_end)]
 
     ax_price.plot(win_zoom.index, win_zoom.values, color=color, lw=0.9, label=fuel_label)
-    ax_price.axvline(shock,     color=ev["color"], lw=1.5, ls="--", label="Evento")
-    ax_price.axvline(best_tau,  color=color, lw=1.2, ls=":", alpha=0.8,
-                     label=f"L1 τ={best_tau.date()}")
+    ax_price.axvline(shock,  color=ev["color"], lw=1.5, ls="--", label="Evento")
+    ax_price.axvline(theta,  color=color, lw=2.0, ls="-",
+                     alpha=0.9, label=f"θ={theta.date()}")
+    ax_price.axvline(l1_tau, color="steelblue", lw=1.0, ls=":",
+                     alpha=0.7, label=f"L1 τ={l1_tau.date()}")
     ax_price.axvline(cusum_peak, color="darkorange", lw=1.0, ls="-.",
-                     label=f"L2 CUSUM={cusum_peak.date()}")
-    for i, d in enumerate(pelt_breaks):
-        if zoom_start <= d <= zoom_end:
-            ax_price.axvline(d, color="green", lw=0.8, ls=":", alpha=0.7,
-                             label=f"L4 PELT" if i == 0 else "")
-    for i, d in enumerate(binseg_best):
-        if zoom_start <= d <= zoom_end:
-            ax_price.axvline(d, color="purple", lw=0.8, ls=":", alpha=0.7,
-                             label=f"L3 BinSeg" if i == 0 else "")
+                     alpha=0.7, label=f"L2 CUSUM={cusum_peak.date()}")
+    for i, b in enumerate(pelt_breaks):
+        if zoom_start <= b <= zoom_end:
+            ax_price.axvline(b, color="green", lw=0.8, ls=":", alpha=0.7,
+                             label="L4 PELT" if i == 0 else "")
+    for i, b in enumerate(binseg_best):
+        if zoom_start <= b <= zoom_end:
+            ax_price.axvline(b, color="purple", lw=0.8, ls=":", alpha=0.7,
+                             label="L3 BinSeg" if i == 0 else "")
     ax_price.set_xlim(zoom_start, zoom_end)
     ax_price.set_ylabel("Margine (€/L)", fontsize=8)
+    ax_price.set_title(
+        f"{fuel_label} – zoom ±{ZOOM_WIN}gg attorno a θ  (supporto L1–L4)",
+        fontsize=8, pad=3,
+    )
     ax_price.legend(fontsize=6, loc="upper left", ncol=2)
     ax_price.grid(axis="y", alpha=0.25)
     ax_price.xaxis.set_major_formatter(mdates.DateFormatter("%d %b %Y"))
     ax_price.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
     plt.setp(ax_price.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=7)
 
-    # ════ PANNELLO 2: CUSUM ═══════════════════════════════════════════════════
+    # ════ PANNELLO 3: CUSUM (L2 supporto) ════════════════════════════════════
     ax_cusum.plot(cs.index, cs.values, color=color, lw=0.9)
     ax_cusum.axhline(0, color="grey", lw=0.7, ls="--")
-    ax_cusum.axvline(shock,      color=ev["color"], lw=1.5, ls="--")
-    ax_cusum.axvline(cusum_peak, color="darkorange", lw=1.2, ls="-.")
-    ax_cusum.set_ylabel("CUSUM margine (€/L)", fontsize=8)
+    ax_cusum.axvline(shock,      color=ev["color"],  lw=1.5, ls="--")
+    ax_cusum.axvline(theta,      color=color,        lw=1.8, ls="-",  alpha=0.8,
+                     label=f"θ={theta.date()}")
+    ax_cusum.axvline(cusum_peak, color="darkorange",  lw=1.0, ls="-.", alpha=0.7,
+                     label=f"L2 CUSUM={cusum_peak.date()}")
     ax_cusum.fill_between(cs.index, cs.values, 0,
                           where=cs.values > 0, alpha=0.15, color=color)
     ax_cusum.fill_between(cs.index, cs.values, 0,
                           where=cs.values < 0, alpha=0.15, color="green")
+    ax_cusum.set_ylabel("CUSUM margine (€/L)", fontsize=8)
+    ax_cusum.set_title("L2 — CUSUM (supporto)", fontsize=8, pad=3)
+    ax_cusum.legend(fontsize=6)
     ax_cusum.grid(axis="y", alpha=0.25)
     ax_cusum.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
 
-    # ════ PANNELLO 3: t-stat sliding — solo τ dove margine CRESCE (Δ > 0) ══════
+    # ════ PANNELLO 4: sliding t-stat L1 (supporto) ═══════════════════════════
     if not ttest_df.empty:
         rising = ttest_df[ttest_df["delta_mean"] > 0]
         ax_tstat.plot(rising["tau"], rising["t_stat"].abs(),
-                      color=color, lw=0.9, label="Δ > 0 (margine cresce)")
-        ax_tstat.axvline(shock,    color=ev["color"], lw=1.5, ls="--", label="Evento")
-        if not rising.empty and best_tau in rising["tau"].values:
-            ax_tstat.axvline(best_tau, color=color, lw=1.2, ls=":", label=f"τ={best_tau.date()}")
+                      color=color, lw=0.9, label="Δ > 0")
+        ax_tstat.axvline(shock,  color=ev["color"], lw=1.5, ls="--", label="Evento")
+        ax_tstat.axvline(theta,  color=color, lw=1.8, ls="-", alpha=0.8,
+                         label=f"θ={theta.date()}")
+        if not rising.empty and l1_tau in rising["tau"].values:
+            ax_tstat.axvline(l1_tau, color="steelblue", lw=1.0, ls=":",
+                             label=f"L1 τ={l1_tau.date()}")
         ax_tstat.axhline(stats.t.ppf(0.975, df=HALF_WIN * 2 - 2),
                          color="grey", lw=0.7, ls=":", label="α=0.05")
-        ax_tstat.set_ylabel("|t-stat|  (solo Δ>0)", fontsize=8)
-        ax_tstat.legend(fontsize=6)
-        sig = "★" if best_p < 0.05 else ""
+        ax_tstat.set_ylabel("|t-stat|  (Δ>0)", fontsize=8)
+        sig = "★" if l1_p < 0.05 else ""
         ax_tstat.set_title(
-            f"L1 sliding t-test  |  τ={best_tau.date()}  "
-            f"Δ={delta:+.4f} €/L  p_bonf={best_p:.3f}{sig}",
-            fontsize=7, pad=2
+            f"L1 — sliding t-test (supporto)  |  τ={l1_tau.date()}  "
+            f"Δ={l1_delta:+.4f} €/L  p_bonf={l1_p:.3f}{sig}",
+            fontsize=7, pad=2,
         )
+        ax_tstat.legend(fontsize=6)
     ax_tstat.grid(axis="y", alpha=0.25)
     ax_tstat.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
 
-    # ════ PANNELLO 4: BIC curve BinSeg ════════════════════════════════════════
+    # ════ PANNELLO 5: BIC curve BinSeg (L3 supporto) ══════════════════════════
     if binseg_res.get("bic_curve"):
         ns, bics = zip(*binseg_res["bic_curve"])
         ax_bic.plot(ns, bics, marker="o", color=color, lw=1)
@@ -533,62 +581,30 @@ def plot_event_fuel(
         ax_bic.set_xticks(list(ns))
         ax_bic.legend(fontsize=6)
         ax_bic.set_title(
-            f"L3 BinSeg: {len(binseg_best)} break  |  "
+            f"L3 BinSeg (supporto): {len(binseg_best)} break  |  "
             f"L4 PELT: {len(pelt_breaks)} break  →  "
             + (", ".join(str(d.date()) for d in pelt_breaks) if pelt_breaks else "nessuno"),
-            fontsize=7, pad=2
+            fontsize=7, pad=2,
         )
     else:
         ax_bic.text(0.5, 0.5, "ruptures non disponibile",
                     ha="center", va="center", transform=ax_bic.transAxes, fontsize=8)
     ax_bic.grid(alpha=0.25)
 
-    # ════ PANNELLO 5: L5 Window Discrepancy (Paper Eq. 1–2) ═══════════════════
-    if ax_l5 is not None:
-        d_vals = l5_res.get("d_values")
-        ma_ser = l5_res.get("ma_series")
-        l5_tau = l5_res["tau"]
-        bic_ok = l5_res["bic_ok"]
-
-        if d_vals is not None and not d_vals.empty:
-            ax_l5.plot(d_vals.index, d_vals.values, color=color, lw=0.9,
-                       label="d(y_uv, y_vw) — discrepanza L2")
-            ax_l5.axvline(shock,   color=ev["color"], lw=1.5, ls="--", label="Shock")
-            ax_l5.axvline(l5_tau,  color=color,       lw=1.8, ls=":",
-                          label=f"L5 τ={l5_tau.date()}"
-                                f"  {'✓ BIC ok' if bic_ok else '– non confermato BIC'}")
-            ax_l5.axhline(0, color="grey", lw=0.6, ls="-")
-
-            # Evidenzia il massimo con una stella
-            ax_l5.scatter([l5_tau], [d_vals.max()],
-                          color=color, s=60, zorder=5, marker="*")
-
-            ax_l5.set_ylabel("Discrepanza d (€/L)²", fontsize=8)
-            ax_l5.legend(fontsize=6)
-            bic_tag = "✓ confermato da BIC (L3/L4)" if bic_ok else "⚠ non in accordo con BIC"
-            ax_l5.set_title(
-                f"L5 Window Discrepancy L2  |  τ={l5_tau.date()}  "
-                f"d_max={l5_res['d_max']:.4f}  {bic_tag}",
-                fontsize=7, pad=2
-            )
-        else:
-            ax_l5.text(0.5, 0.5, "L5: dati insufficienti",
-                       ha="center", va="center", transform=ax_l5.transAxes, fontsize=8)
-        ax_l5.grid(alpha=0.25)
-        ax_l5.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-
     return {
-        "L1_tau":      best_tau,
-        "L1_t":        best_t,
-        "L1_p_bonf":   best_p,
-        "L1_delta":    delta,
-        "L2_cusum":    cusum_peak,
-        "L3_binseg":   binseg_best,
-        "L3_best_n":   binseg_res.get("best_n"),
-        "L4_pelt":     pelt_breaks,
-        "L5_tau":      l5_res["tau"],
-        "L5_d_max":    l5_res["d_max"],
-        "L5_bic_ok":   l5_res["bic_ok"],
+        # ── Output primario ──────────────────────────────────────────────────
+        "theta":             theta,
+        "d_max":             theta_res["d_max"],
+        "theta_confirmed":   confirmed,
+        # ── Metodi di supporto ───────────────────────────────────────────────
+        "L1_tau":            l1_tau,
+        "L1_t":              l1_t,
+        "L1_p_bonf":         l1_p,
+        "L1_delta":          l1_delta,
+        "L2_cusum":          cusum_peak,
+        "L3_binseg":         binseg_best,
+        "L3_best_n":         binseg_res.get("best_n"),
+        "L4_pelt":           pelt_breaks,
     }
 
 
@@ -670,11 +686,10 @@ def main() -> None:
         print(f"  margin_benzina: {benz_avail.index.min().date()} → {benz_avail.index.max().date()}")
     print(f"  margin_gasolio: {daily['margin_gasolio'].dropna().index.min().date()} → "
           f"{daily['margin_gasolio'].dropna().index.max().date()}")
-    print(f"\nConfigurazione: HALF_WIN={HALF_WIN}g  SEARCH=±{SEARCH}g  STEP={STEP}g")
-    print(f"Nota CLT: con HALF_WIN={HALF_WIN} e φ≈0.3 → n_eff≈{int(HALF_WIN*0.54)} "
-          f"({'OK' if int(HALF_WIN*0.54)>=30 else 'approssimato, considera HALF_WIN≥60'})\n")
+    print(f"\nConfigurazione: HALF_WIN={HALF_WIN}g  SEARCH=±{SEARCH}g  STEP={STEP}g\n")
 
     all_results: dict = {}
+    theta_rows:  list = []
 
     for ev_name, ev in EVENTS.items():
         shock = ev["shock"]
@@ -690,14 +705,14 @@ def main() -> None:
         print(f"  Finestra: {ev['pre_start'].date()} → {ev['post_end'].date()}")
         print(f"{'═'*70}")
 
-        fig = plt.figure(figsize=(18, 18))
+        # ── Figura: 5 righe × 2 colonne  (riga 0 = θ canonico) ───────────────
+        fig = plt.figure(figsize=(18, 20))
         fig.suptitle(
-            f"Change-point detection sul MARGINE – {ev_name}\n"
+            f"θ (break canonico) + diagnostica di supporto — {ev_name}\n"
             f"Shock: {ev['label'].replace(chr(10), ' ')}",
-            fontsize=13, fontweight="bold"
+            fontsize=13, fontweight="bold",
         )
-
-        gs = gridspec.GridSpec(5, 2, figure=fig, hspace=0.55, wspace=0.30)
+        gs = gridspec.GridSpec(5, 2, figure=fig, hspace=0.58, wspace=0.30)
 
         ev_results: dict = {}
 
@@ -707,8 +722,6 @@ def main() -> None:
                 continue
 
             series = daily[col_name].dropna()
-
-            # Benzina: salta evento se non ci sono dati nel range
             win_check = series[(series.index >= ev["pre_start"]) &
                                (series.index <= ev["post_end"])]
             if len(win_check) < 2 * HALF_WIN:
@@ -716,42 +729,60 @@ def main() -> None:
                       f"(n={len(win_check)}), salto.")
                 continue
 
-            ax_price = fig.add_subplot(gs[0, col_idx])
-            ax_cusum = fig.add_subplot(gs[1, col_idx])
-            ax_tstat = fig.add_subplot(gs[2, col_idx])
-            ax_bic   = fig.add_subplot(gs[3, col_idx])
-            ax_l5    = fig.add_subplot(gs[4, col_idx])
+            ax_theta = fig.add_subplot(gs[0, col_idx])   # θ canonico
+            ax_price = fig.add_subplot(gs[1, col_idx])   # zoom margine + break
+            ax_cusum = fig.add_subplot(gs[2, col_idx])   # CUSUM
+            ax_tstat = fig.add_subplot(gs[3, col_idx])   # L1 sliding t-test
+            ax_bic   = fig.add_subplot(gs[4, col_idx])   # L3 BIC curve
 
-            ax_price.set_title(
-                f"{fuel_key.capitalize()} – {ev['label'].replace(chr(10),' ')}",
-                fontsize=9, fontweight="bold", pad=4
+            # Etichetta colonna in testa
+            ax_theta.set_title(
+                f"{fuel_key.capitalize()} — θ (Window Discrepancy L2, metodo paper)",
+                fontsize=9, fontweight="bold", pad=4,
             )
 
             res = plot_event_fuel(
                 ev_name, ev, series,
                 fuel_label=fuel_key.capitalize(),
                 fuel_color=fuel_color,
+                ax_theta=ax_theta,
                 ax_price=ax_price,
                 ax_cusum=ax_cusum,
                 ax_tstat=ax_tstat,
                 ax_bic=ax_bic,
-                ax_l5=ax_l5,
             )
             ev_results[fuel_key] = res
 
             if res:
+                conf_icon = "✓" if res["theta_confirmed"] else "⚠"
                 print(f"\n  [{fuel_key.upper()}]")
-                print(f"    L1 τ={res['L1_tau'].date()}  Δ={res['L1_delta']:+.4f} €/L"
-                      f"  p_bonf={res['L1_p_bonf']:.3f}"
-                      f"  {'★ significativo' if res['L1_p_bonf']<0.05 else '– non sig.'}")
-                print(f"    L2 CUSUM peak = {res['L2_cusum'].date()}")
-                print(f"    L3 BinSeg ({res['L3_best_n']} break ottimale): "
-                      + (", ".join(str(d.date()) for d in res['L3_binseg']) or "nessuno"))
+                print(f"    θ  = {res['theta'].date()}  "
+                      f"d_max={res['d_max']:.4f}  "
+                      f"{conf_icon} {'confermato L3/L4' if res['theta_confirmed'] else 'non in accordo L3/L4'}")
+                print(f"    L1 = {res['L1_tau'].date()}  Δ={res['L1_delta']:+.4f} €/L  "
+                      f"p_bonf={res['L1_p_bonf']:.3f}"
+                      f"{'  ★' if res['L1_p_bonf'] < 0.05 else ''}")
+                print(f"    L2 CUSUM = {res['L2_cusum'].date()}")
+                print(f"    L3 BinSeg ({res['L3_best_n']} break): "
+                      + (", ".join(str(d.date()) for d in res["L3_binseg"]) or "nessuno"))
                 print(f"    L4 PELT ({len(res['L4_pelt'])} break): "
-                      + (", ".join(str(d.date()) for d in res['L4_pelt']) or "nessuno"))
-                bic_tag = "✓ BIC ok" if res.get("L5_bic_ok") else "⚠ non confermato BIC"
-                print(f"    L5 Window-L2 τ={res['L5_tau'].date()}"
-                      f"  d_max={res['L5_d_max']:.4f}  {bic_tag}")
+                      + (", ".join(str(d.date()) for d in res["L4_pelt"]) or "nessuno"))
+
+                # ── Accumula righe per theta_results.csv ─────────────────────
+                theta_rows.append({
+                    "evento":           ev_name,
+                    "shock":            shock.date(),
+                    "carburante":       fuel_key,
+                    "theta":            res["theta"].date(),
+                    "d_max":            round(res["d_max"], 6),
+                    "theta_confirmed":  res["theta_confirmed"],
+                    "L1_tau":           res["L1_tau"].date(),
+                    "L1_delta_eurl":    round(res["L1_delta"], 5),
+                    "L1_p_bonf":        round(res["L1_p_bonf"], 4),
+                    "L2_cusum":         res["L2_cusum"].date(),
+                    "L3_binseg":        "; ".join(str(d.date()) for d in res["L3_binseg"]) or "",
+                    "L4_pelt":          "; ".join(str(d.date()) for d in res["L4_pelt"]) or "",
+                })
 
         all_results[ev_name] = ev_results
 
@@ -760,23 +791,24 @@ def main() -> None:
         plt.close(fig)
         print(f"\n  → Salvato: {out}\n")
 
+    # ── Export theta_results.csv ──────────────────────────────────────────────
+    if theta_rows:
+        theta_csv = OUT_DIR / "theta_results.csv"
+        pd.DataFrame(theta_rows).to_csv(theta_csv, index=False, encoding="utf-8-sig")
+        print(f"  → Esportato: {theta_csv}")
+
     # ── Riepilogo finale ──────────────────────────────────────────────────────
     print(f"\n{'═'*70}")
-    print("RIEPILOGO CHANGE POINT MARGINE – tutti gli eventi")
+    print("RIEPILOGO θ — break canonici (Window Discrepancy L2)")
     print(f"{'═'*70}")
-    print(f"{'Evento':<28} {'Carb.':<10} {'L1 τ':<13} {'Δ €/L':>8} "
-          f"{'p_bonf':>8} {'L5 τ (window-L2)':<15} {'L5 BIC'}")
-    print("-"*90)
-    for ev_name, fuels in all_results.items():
-        for fuel, res in fuels.items():
-            if not res:
-                continue
-            pelt_str = ", ".join(str(d.date()) for d in res["L4_pelt"]) or "—"
-            l5_str   = str(res.get("L5_tau", shock).date()) if res.get("L5_tau") else "—"
-            bic_str  = "✓" if res.get("L5_bic_ok") else "⚠"
-            print(f"{ev_name:<28} {fuel:<10} {str(res['L1_tau'].date()):<13} "
-                  f"{res['L1_delta']:>+8.4f} {res['L1_p_bonf']:>8.3f}  "
-                  f"{l5_str:<15} {bic_str}")
+    print(f"{'Evento':<28} {'Carb.':<10} {'shock':<13} {'θ':<13} "
+          f"{'d_max':>8} {'confermato'}")
+    print("-" * 80)
+    for row in theta_rows:
+        conf = "✓" if row["theta_confirmed"] else "⚠"
+        print(f"{row['evento']:<28} {row['carburante']:<10} "
+              f"{str(row['shock']):<13} {str(row['theta']):<13} "
+              f"{row['d_max']:>8.4f}  {conf}")
 
 
 if __name__ == "__main__":

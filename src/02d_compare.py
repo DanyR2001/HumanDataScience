@@ -84,6 +84,12 @@ def load_results(mode: str, detect_target: str = "margin") -> pd.DataFrame:
             df = df[df["is_best"].astype(bool)].copy()
 
         df["metodo"] = method
+
+        # Normalizza colonne method-specific → nomi comuni:
+        # v2 usa gain_ols_meur invece di gain_total_meur
+        if "gain_total_meur" not in df.columns and "gain_ols_meur" in df.columns:
+            df = df.rename(columns={"gain_ols_meur": "gain_total_meur"})
+
         cols_keep = ["metodo", "evento", "carburante",
                      "gain_total_meur", "gain_ci_low_meur", "gain_ci_high_meur",
                      "extra_mean_eurl"]
@@ -259,16 +265,30 @@ def plot_scatter(pivot_df: pd.DataFrame, out_path: Path, mode: str) -> None:
 def plot_heatmap(df: pd.DataFrame, out_path: Path, mode: str) -> None:
     available = [m for m in ["v1_naive","v2_intermediate","v3_arimax"]
                  if m in df["metodo"].unique()]
+
+    if len(available) < 2:
+        print("  ⚠ Heatmap: meno di 2 metodi, salto.")
+        return
+
     pivot = df[df["metodo"].isin(available)].pivot_table(
         index=["evento", "carburante"], columns="metodo",
         values="gain_total_meur", aggfunc="first",
+        dropna=False,
     )
+
+    if pivot.empty or pivot.values.size == 0:
+        print("  ⚠ Heatmap: pivot vuoto, salto.")
+        return
+
+    data_np = pivot.values.astype(float)
+    if np.all(np.isnan(data_np)):
+        print("  ⚠ Heatmap: tutti i valori NaN, salto.")
+        return
 
     fig, ax = plt.subplots(figsize=(max(6, len(available)*2), max(4, len(pivot)*0.8)))
     fig.suptitle(f"Guadagni Extra (M€) – Confronto Metodi  [mode={mode}]",
                  fontsize=11, fontweight="bold")
 
-    data_np = pivot.values.astype(float)
     vmax    = np.nanmax(np.abs(data_np)) + 1e-6
     norm    = mcolors.TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
     im      = ax.imshow(data_np, aspect="auto", cmap=plt.cm.RdYlGn, norm=norm)
@@ -356,6 +376,14 @@ def main() -> None:
 
     df = load_results(mode, detect_target)
     if df.empty:
+        return
+
+    n_methods_with_data = df.groupby("metodo")["gain_total_meur"].apply(
+        lambda s: s.notna().any()
+    ).sum()
+    if n_methods_with_data == 0:
+        print("  ✗ gain_total_meur assente in tutti i metodi caricati. "
+              "Verificare i nomi colonne nei CSV.")
         return
 
     mode_label = f"detected/{detect_target}" if mode == "detected" else mode

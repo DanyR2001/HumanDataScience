@@ -54,7 +54,9 @@ GARANZIA NO-LOOK-AHEAD
 
 Modalità (--mode):
   fixed     : T0 = data dello shock hardcodata [default]
-  detected  : T0 rilevato via PELT (ruptures, modello RBF)
+  detected  : T0 rilevato via BOCPD (Bayesian Online Change Point Detection,
+              Adams & MacKay 2007, conjugate prior Normal-InverseGamma).
+              Implementazione from scratch, nessuna dipendenza esterna.
 
 Parametro --detect (solo mode=detected):
   margin  : detection sul margine distributore  [default]
@@ -96,13 +98,6 @@ except ImportError:
     HAS_SM = False
     warnings.warn("statsmodels non installato. pip install statsmodels")
 
-try:
-    import ruptures as rpt
-    HAS_RPT = True
-except ImportError:
-    HAS_RPT = False
-    warnings.warn("ruptures non installato. pip install ruptures")
-
 # ── Configurazione ────────────────────────────────────────────────────────────
 BASE_DIR    = Path(__file__).parent
 DAILY_CSV   = BASE_DIR / "data" / "processed" / "daily_fuel_prices_all.csv"
@@ -110,6 +105,7 @@ GASOIL_CSV  = BASE_DIR / "data" / "Futures" / "London Gas Oil Futures Historical
 EUROBOB_CSV = BASE_DIR / "data" / "Futures" / "Eurobob_B7H1_date.csv"
 EURUSD_CSV  = BASE_DIR / "data" / "raw" / "eurusd.csv"
 _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
+# v4 usa BOCPD (Bayesian Online) come detection autonoma — non legge theta_results.csv
 
 PRE_START   = pd.Timestamp("2015-01-01")  # inizio dataset per il fit ARIMA
 PRE_WIN     = 60    # giorni pre-T0 usati SOLO per il plot (no-lookahead garantito)
@@ -156,6 +152,7 @@ PRICE_COLS: dict[str, str] = {
     "benzina": "benzina_net",
     "gasolio": "gasolio_net",
 }
+
 
 APPROACH_COLORS = {"D": "#2980b9", "E": "#e67e22", "F": "#27ae60"}
 APPROACH_LABELS = {
@@ -216,114 +213,177 @@ def load_margin_data() -> pd.DataFrame:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PELT detection  (identico a v3)
+# BOCPD — Bayesian Online Change Point Detection
+# Adams & MacKay (2007), conjugate prior Normal-InverseGamma.
+# Implementazione from scratch, solo numpy + scipy.special.
+#
+# Algoritmo:
+#   Per ogni t, mantiene la distribuzione P(r_t | y_{1:t}) sul "run length"
+#   corrente r_t (numero di osservazioni dall'ultimo change point).
+#   Il predictive è uno Student-t (marginalizzazione NIG).
+#   Ad ogni passo:
+#     growth:  P(r_{t+1}=l+1) ∝ P(r_t=l) · p(y_t|r_t=l) · (1−H)
+#     change:  P(r_{t+1}=0)   ∝ H · Σ_l P(r_t=l) · p(y_t|r_t=l)
+#   dove H = hazard (probabilità a priori di change point ad ogni passo).
+#
+# Selezione: primo τ nel top-quartile della cp_prob nella finestra ±SEARCH,
+#   coerente con la strategia degli altri metodi (inizio rottura strutturale).
 # ══════════════════════════════════════════════════════════════════════════════
 
-def detect_breakpoint_pelt(series: pd.Series, shock: pd.Timestamp) -> dict:
-    """PELT (ruptures RBF) con fallback alla shock date."""
-    if not HAS_RPT:
-        return {"tau": shock, "method": "pelt_fallback_no_ruptures",
-                "n_breaks_total": 0, "_window_series": pd.Series(dtype=float),
-                "_all_breaks": [], "_filtered_breaks": []}
-
-    search_start = shock - pd.Timedelta(days=SEARCH)
-    search_end   = shock + pd.Timedelta(days=SEARCH)
-    window_series = series[
-        (series.index >= search_start - pd.Timedelta(days=20)) &
-        (series.index <= search_end   + pd.Timedelta(days=20))
-    ].dropna()
-
-    if len(window_series) < 20:
-        return {"tau": shock, "method": "pelt_insufficient_data", "n_breaks_total": 0,
-                "_window_series": window_series, "_all_breaks": [], "_filtered_breaks": []}
-
-    try:
-        arr  = window_series.values.astype(float).reshape(-1, 1)
-        algo = rpt.Pelt(model="rbf").fit(arr)
-        bps  = algo.predict(pen=2.0)
-        bp_indices  = [bp - 1 for bp in bps[:-1]]
-        break_dates = [window_series.index[i] for i in bp_indices
-                       if 0 <= i < len(window_series)]
-    except Exception as exc:
-        warnings.warn(f"PELT fallito: {exc}. Fallback shock date.")
-        return {"tau": shock, "method": "pelt_error_fallback", "n_breaks_total": 0,
-                "_window_series": window_series, "_all_breaks": [], "_filtered_breaks": []}
-
-    filtered = [d for d in break_dates if search_start <= d <= search_end]
-    if not filtered:
-        return {"tau": shock, "method": "pelt_nofound_fallback",
-                "n_breaks_total": len(break_dates),
-                "_window_series": window_series,
-                "_all_breaks": break_dates, "_filtered_breaks": []}
-
-    best = min(filtered)
-    return {"tau": best, "method": "pelt_rbf",
-            "n_breaks_total": len(break_dates),
-            "all_filtered": [str(d.date()) for d in filtered],
-            "_window_series": window_series,
-            "_all_breaks": break_dates,
-            "_filtered_breaks": filtered}
+from scipy.special import gammaln as _gammaln
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Break point detection — Window L2 Discrepancy (Paper BLOCCO 1 – Eq. 1–2)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _l2_cost_v4(y: np.ndarray) -> float:
-    """c(y_I) = Σ||y_t − ȳ||² — costo L2 intra-finestra (Paper, Eq. 2)."""
-    if len(y) < 2:
-        return 0.0
-    return float(np.sum((y - y.mean()) ** 2))
-
-
-def detect_breakpoint_window_l2(
+def detect_breakpoint_bocpd(
     series: pd.Series,
     shock: pd.Timestamp,
-    ma_window: int = 7,
-    min_seg: int   = 14,
+    hazard: float = 0.02,
+    alpha0: float = 1.0,
+    beta0: float  = None,   # None → stimato dai dati pre-finestra
+    kappa0: float = 1.0,
+    mu0: float    = None,   # None → media dei primi 10 gg della finestra
 ) -> dict:
     """
-    Changepoint via discrepanza L2 (Paper BLOCCO 1, Eq. 1–2).
-    Restituisce un dict compatibile con detect_breakpoint_pelt per il dispatch.
+    BOCPD (Adams & MacKay 2007) con prior Normal-InverseGamma.
+
+    Parameters
+    ----------
+    hazard  : P(change point) ad ogni step (1 / expected_run_length).
+              hazard=0.02 → run medio di 50 giorni (appropriato per shock mensili).
+    alpha0  : parametro forma della IG prior sulla varianza.
+    beta0   : parametro rate della IG (None → var_empirica * alpha0).
+    kappa0  : pseudocount prior sulla media.
+    mu0     : prior sulla media (None → media dei primi 10 punti della finestra).
     """
-    mask = (
-        (series.index >= shock - pd.Timedelta(days=SEARCH)) &
-        (series.index <= shock + pd.Timedelta(days=SEARCH))
-    )
-    win = series[mask].dropna()
+    search_start = shock - pd.Timedelta(days=SEARCH)
+    search_end   = shock + pd.Timedelta(days=SEARCH)
+    # Finestra estesa per stimare bene la prior e il run-up
+    window = series[
+        (series.index >= search_start - pd.Timedelta(days=40)) &
+        (series.index <= search_end   + pd.Timedelta(days=40))
+    ].dropna()
 
-    if len(win) < 2 * min_seg + ma_window:
-        return {"tau": shock, "method": "window_l2_nofound", "n_breaks_total": 0,
-                "_window_series": win, "_all_breaks": [], "_filtered_breaks": []}
+    fallback = {"tau": shock, "method": "bocpd_fallback_insufficient",
+                "cp_prob": 0.0, "_df": pd.DataFrame()}
+    if len(window) < 20:
+        return fallback
 
-    ma = win.rolling(ma_window, center=True, min_periods=1).mean()
-    y  = ma.values
-    n  = len(y)
-    c_uw = _l2_cost_v4(y)
+    y = window.values.astype(float)
+    T = len(y)
 
-    d_vals: list[float] = []
-    cand_dates: list[pd.Timestamp] = []
+    # Iperparametri prior
+    _mu0    = mu0    if mu0    is not None else float(y[:min(10, T)].mean())
+    _beta0  = beta0  if beta0  is not None else float(np.var(y[:min(10, T)]) + 1e-6) * alpha0
+    _alpha0 = alpha0
+    _kappa0 = kappa0
 
-    for v in range(min_seg, n - min_seg):
-        d = c_uw - _l2_cost_v4(y[:v]) - _l2_cost_v4(y[v:])
-        d_vals.append(d)
-        cand_dates.append(ma.index[v])
+    # ── Funzione predictive log-prob  p(x | NIG) = Student-t ─────────────────
+    def _pred_log(x_val: float,
+                  mu: np.ndarray, kappa: np.ndarray,
+                  alpha: np.ndarray, beta: np.ndarray) -> np.ndarray:
+        """Vectorized log Student-t(2α, μ, √(β(κ+1)/(κα)))."""
+        df    = 2.0 * alpha
+        scale = np.sqrt(beta * (kappa + 1.0) / (kappa * alpha))
+        return (
+            _gammaln((df + 1.0) / 2.0)
+            - _gammaln(df / 2.0)
+            - 0.5 * np.log(df * np.pi * scale ** 2)
+            - (df + 1.0) / 2.0 * np.log(1.0 + (x_val - mu) ** 2 / (df * scale ** 2))
+        )
 
-    if not cand_dates:
-        return {"tau": shock, "method": "window_l2_nofound", "n_breaks_total": 0,
-                "_window_series": win, "_all_breaks": [], "_filtered_breaks": []}
+    # ── NIG posterior update per un singolo punto ─────────────────────────────
+    def _update(x_val: float,
+                mu: np.ndarray, kappa: np.ndarray,
+                alpha: np.ndarray, beta: np.ndarray
+                ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        kn = kappa + 1.0
+        mn = (kappa * mu + x_val) / kn
+        an = alpha + 0.5
+        bn = beta + kappa * (x_val - mu) ** 2 / (2.0 * kn)
+        return mn, kn, an, bn
 
-    best_idx = int(np.argmax(d_vals))
-    best_tau = cand_dates[best_idx]
+    # ── Stato iniziale ────────────────────────────────────────────────────────
+    # log P(r_t = l): array di lunghezza crescente
+    log_R = np.array([0.0])  # P(r_0 = 0) = 1
+
+    mus    = np.array([_mu0])
+    kappas = np.array([_kappa0])
+    alphas = np.array([_alpha0])
+    betas  = np.array([_beta0])
+
+    cp_log_probs = np.full(T, -np.inf)
+    log_H  = np.log(hazard)
+    log_1H = np.log(1.0 - hazard)
+
+    for t in range(T):
+        x = y[t]
+        n = len(log_R)
+
+        # Predictive log-probs per ogni run length corrente
+        log_preds = _pred_log(x, mus[:n], kappas[:n], alphas[:n], betas[:n])
+
+        # Joint log P(r_t = l, x_t)
+        log_joint = log_R + log_preds
+
+        # Normalizzazione (log evidence)
+        log_ev = float(np.logaddexp.reduce(log_joint))
+
+        # P(change point a t+1): hazard * evidence
+        log_cp_next = log_ev + log_H
+
+        # P(growth): per ogni run length l → l+1
+        log_R_grow = log_joint + log_1H
+
+        # Nuova distribuzione run-length
+        log_R_new        = np.empty(n + 1)
+        log_R_new[0]     = log_cp_next - log_ev   # normalizzato
+        log_R_new[1:]    = log_R_grow  - log_ev   # normalizzato
+        log_R = log_R_new
+
+        # Probabilità che t sia un change point (per il plot e la selezione)
+        cp_log_probs[t] = log_cp_next - log_ev
+
+        # Aggiorna NIG: nuovi parametri per tutti i run length
+        new_mus    = np.empty(n + 1)
+        new_kappas = np.empty(n + 1)
+        new_alphas = np.empty(n + 1)
+        new_betas  = np.empty(n + 1)
+        # Indice 0: reset alla prior (nuovo run dopo change point)
+        new_mus[0], new_kappas[0], new_alphas[0], new_betas[0] = (
+            _mu0, _kappa0, _alpha0, _beta0)
+        # Indici 1..n: aggiornamento Bayes per run lengths precedenti 0..n-1
+        (new_mus[1:], new_kappas[1:],
+         new_alphas[1:], new_betas[1:]) = _update(x, mus[:n], kappas[:n],
+                                                   alphas[:n], betas[:n])
+        mus    = new_mus
+        kappas = new_kappas
+        alphas = new_alphas
+        betas  = new_betas
+
+    # ── Selezione change point nella finestra di ricerca ─────────────────────
+    cp_df = pd.DataFrame({
+        "tau":     window.index[:T],
+        "cp_prob": np.exp(np.clip(cp_log_probs, -700, 0)),
+    })
+    mask     = (cp_df["tau"] >= search_start) & (cp_df["tau"] <= search_end)
+    search_df = cp_df[mask]
+
+    if search_df.empty or search_df["cp_prob"].max() < 1e-8:
+        return {**fallback, "method": "bocpd_nofound", "_df": cp_df}
+
+    # Primo τ nel top quartile (coerente con v1/v2/v3)
+    threshold = float(np.percentile(search_df["cp_prob"], 75))
+    top = search_df[search_df["cp_prob"] >= threshold]
+    if top.empty:
+        top = search_df
+    best = top.sort_values("tau").iloc[0]
 
     return {
-        "tau":              best_tau,
-        "method":           "window_l2",
-        "n_breaks_total":   1,
-        "all_filtered":     [str(best_tau.date())],
-        "_window_series":   ma,
-        "_all_breaks":      [best_tau],
-        "_filtered_breaks": [best_tau],
+        "tau":      best["tau"],
+        "cp_prob":  round(float(best["cp_prob"]), 6),
+        "method":   "bocpd_nig",
+        "_df":      cp_df,
+        "_search_df": search_df,
+        "_threshold": threshold,
     }
 
 
@@ -1028,7 +1088,10 @@ def _plot_main(
 def main() -> None:
     parser = argparse.ArgumentParser(description="V4 Transfer Function ITS pipeline")
     parser.add_argument("--mode",   choices=["fixed", "detected"], default="fixed")
-    parser.add_argument("--detect", choices=["margin", "price"],   default="margin")
+    parser.add_argument("--detect", choices=["margin", "price"], default="margin",
+                        help="(solo mode=detected) serie di detection: "
+                             "margin = BOCPD sul margine [default], "
+                             "price  = BOCPD sul prezzo pompa netto")
     args, _ = parser.parse_known_args()
     mode          = args.mode
     detect_target = args.detect
@@ -1042,6 +1105,9 @@ def main() -> None:
     print("═" * 70)
     print(f"  02d_v4_transfer.py  –  Metodo 4: ITS + CCF + SARIMAX  [mode={mode}]")
     print(f"  Garanzia no-look-ahead: ARIMA stimato su tutti i dati da {PRE_START.date()} a T0")
+    if mode == "detected":
+        print(f"  T0 = BOCPD (Adams & MacKay 2007, NIG prior, hazard=0.02)")
+        print(f"  Detection su: {'MARGINE distributore' if detect_target == 'margin' else 'PREZZO POMPA NETTO'}")
     print(f"  Output: {OUT_DIR}")
     print("═" * 70)
 
@@ -1060,19 +1126,23 @@ def main() -> None:
 
         for row_idx, (fuel_key, (col_name, fuel_color)) in enumerate(FUELS.items()):
             series = data[col_name].dropna()
-            if mode == "detected" and detect_target == "price":
-                detect_series = data[PRICE_COLS[fuel_key]].dropna()
-            else:
-                detect_series = series
 
-            # ── Determina T0 ──────────────────────────────────────────────────
+            # ── Determina T0 — BOCPD autonomo ────────────────────────────────
             if mode == "detected":
-                bp           = detect_breakpoint_pelt(detect_series, shock)
+                # Seleziona la serie su cui applicare la detection
+                if detect_target == "price":
+                    detect_col    = PRICE_COLS[fuel_key]
+                    detect_series = data[detect_col].dropna()
+                else:
+                    detect_series = series  # margine (default)
+                bp           = detect_breakpoint_bocpd(detect_series, shock)
                 t0           = bp["tau"]
                 break_method = bp["method"]
+                cp_prob      = bp["cp_prob"]
             else:
                 t0           = shock
                 break_method = "fixed_at_shock"
+                cp_prob      = np.nan
 
             # ── Estrai finestre pre / post ────────────────────────────────────
             # pre: tutti i dati da PRE_START fino a T0 (no look-ahead garantito)
@@ -1090,7 +1160,10 @@ def main() -> None:
                 continue
 
             print(f"\n{'─'*60}")
-            print(f"  {ev_name}  [{fuel_key.upper()}]  T0={t0.date()}")
+            print(f"  {ev_name}  [{fuel_key.upper()}]  T0={t0.date()}  ({break_method})")
+            if mode == "detected" and not np.isnan(cp_prob):
+                print(f"  BOCPD cp_prob={cp_prob:.6f}  "
+                      f"(Δ={( t0 - shock).days:+d}gg dallo shock)")
 
             # ── ADF test informativo sul pre ──────────────────────────────────
             adf = adf_summary(pre)
@@ -1209,7 +1282,7 @@ def main() -> None:
             base_row = {
                 "metodo":          "v4_transfer",
                 "mode":            mode,
-                "detect_target":   detect_target if mode == "detected" else "fixed",
+                "break_method":      break_method,
                 "evento":          ev_name,
                 "carburante":      fuel_key,
                 "shock":           shock.date(),
@@ -1241,7 +1314,7 @@ def main() -> None:
                        "converged":         res_["converged"],
                        "is_best":           app_key == best_key,
                        "note":              (f"ITS CCF+Transfer, mode={mode}"
-                                             + (f", detect={detect_target}" if mode == "detected" else "")),
+                                             ),
                        }
                 all_rows.append(row)
 
