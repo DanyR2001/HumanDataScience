@@ -142,76 +142,79 @@ def make_comparison_table(df: pd.DataFrame) -> pd.DataFrame:
 # 2. Barplot comparativo
 # ══════════════════════════════════════════════════════════════════════════════
 
-def plot_barplot(df: pd.DataFrame, out_path: Path, mode: str) -> None:
+def plot_barplot(df: pd.DataFrame, out_dir: Path, mode: str) -> None:
+    """Un PNG per ogni evento."""
     events  = df["evento"].unique()
     methods = df["metodo"].unique()
     fuels   = df["carburante"].unique()
-    n_ev    = len(events)
     n_bars  = len(methods) * len(fuels)
     width   = 0.8 / n_bars
 
-    fig, ax = plt.subplots(figsize=(max(10, n_ev * 4), 6))
-    fig.suptitle(
-        f"Confronto Guadagni Extra Speculativi – 3 Metodi ITS  [mode={mode}]\n"
-        "(basati su stime controfattuali, ±CI 90%)",
-        fontsize=11, fontweight="bold"
-    )
+    for ev in events:
+        df_ev   = df[df["evento"] == ev]
+        fig, ax = plt.subplots(figsize=(max(6, n_bars * 1.3), 6))
+        fig.suptitle(
+            f"Confronto Guadagni Extra Speculativi  [mode={mode}]\n"
+            f"{ev}  –  basati su stime controfattuali, ±CI 90%",
+            fontsize=11, fontweight="bold",
+        )
 
-    x = np.arange(n_ev)
-    bar_idx = 0
+        x = np.arange(1)
+        bar_idx = 0
 
-    for method in methods:
-        for fuel in fuels:
-            sub = df[(df["metodo"] == method) & (df["carburante"] == fuel)]
-            vals, ci_lo_err, ci_hi_err = [], [], []
-            for ev in events:
-                row = sub[sub["evento"] == ev]
-                if row.empty:
-                    vals.append(0); ci_lo_err.append(0); ci_hi_err.append(0)
-                else:
-                    g   = row["gain_total_meur"].values[0]
-                    clo = row["gain_ci_low_meur"].values[0]
-                    chi = row["gain_ci_high_meur"].values[0]
-                    vals.append(g)
-                    ci_lo_err.append(max(0, g - clo))
-                    ci_hi_err.append(max(0, chi - g))
+        for method in methods:
+            for fuel in fuels:
+                sub = df_ev[(df_ev["metodo"] == method) & (df_ev["carburante"] == fuel)]
+                offset = (bar_idx - n_bars / 2 + 0.5) * width
+                if not sub.empty:
+                    g   = sub["gain_total_meur"].values[0]
+                    clo = sub["gain_ci_low_meur"].values[0]
+                    chi = sub["gain_ci_high_meur"].values[0]
+                    ci_lo = max(0, g - clo) if not np.isnan(clo) else 0
+                    ci_hi = max(0, chi - g) if not np.isnan(chi) else 0
+                    bar = ax.bar(
+                        x + offset, [g], width,
+                        label=f"{LABELS.get(method, method)} – {fuel}",
+                        color=COLORS.get(method, "grey"),
+                        hatch=FUEL_PATTERNS.get(fuel, ""),
+                        alpha=0.85, edgecolor="white",
+                    )
+                    ax.errorbar(x + offset, [g], yerr=[[ci_lo], [ci_hi]],
+                                fmt="none", color="black", capsize=3, lw=0.8)
+                    if not np.isnan(g):
+                        ax.text(bar[0].get_x() + bar[0].get_width()/2,
+                                bar[0].get_height() + (1 if g >= 0 else -4),
+                                f"{g:+.0f}", ha="center", va="bottom",
+                                fontsize=7)
+                bar_idx += 1
 
-            offset = (bar_idx - n_bars / 2 + 0.5) * width
-            bars = ax.bar(
-                x + offset, vals, width,
-                label=f"{LABELS.get(method, method)} – {fuel}",
-                color=COLORS.get(method, "grey"),
-                hatch=FUEL_PATTERNS.get(fuel, ""),
-                alpha=0.85, edgecolor="white",
-            )
-            ax.errorbar(x + offset, vals, yerr=[ci_lo_err, ci_hi_err],
-                        fmt="none", color="black", capsize=3, lw=0.8)
-            for bar, v in zip(bars, vals):
-                if not np.isnan(v):
-                    ax.text(bar.get_x() + bar.get_width()/2,
-                            bar.get_height() + (1 if v >= 0 else -4),
-                            f"{v:+.0f}", ha="center", va="bottom",
-                            fontsize=6, rotation=0)
-            bar_idx += 1
-
-    ax.axhline(0, color="black", lw=0.9)
-    ax.set_xticks(x)
-    ax.set_xticklabels([ev.replace("(","(\n") for ev in events], fontsize=9)
-    ax.set_ylabel("Guadagno extra cumulato (M€)", fontsize=9)
-    ax.legend(fontsize=7, loc="upper right", ncol=2,
-              title="Metodo – Carburante", title_fontsize=7)
-    ax.grid(axis="y", alpha=0.20)
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  → Barplot: {out_path}")
+        ax.axhline(0, color="black", lw=0.9)
+        ax.set_xticks([])
+        ax.set_ylabel("Guadagno extra cumulato (M€)", fontsize=9)
+        ax.legend(fontsize=7, loc="upper right", ncol=2,
+                  title="Metodo – Carburante", title_fontsize=7)
+        ax.grid(axis="y", alpha=0.20)
+        fig.tight_layout()
+        slug = ev.replace(" ", "_").replace("/", "-").replace("(", "").replace(")", "")
+        out  = out_dir / f"compare_barplot_{slug}.png"
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  → Barplot [{ev}]: {out}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. Scatter
 # ══════════════════════════════════════════════════════════════════════════════
 
-def plot_scatter(pivot_df: pd.DataFrame, out_path: Path, mode: str) -> None:
+def plot_scatter(pivot_df: pd.DataFrame, out_dir: Path, mode: str) -> None:
+    """Un PNG per ogni evento (+ uno aggregato se ci sono più eventi)."""
+    events = pivot_df["evento"].unique() if "evento" in pivot_df.columns else [None]
+    for ev in events:
+        df_ev = pivot_df[pivot_df["evento"] == ev] if ev is not None else pivot_df
+        _plot_scatter_single(df_ev, out_dir, mode, ev)
+
+
+def _plot_scatter_single(pivot_df: pd.DataFrame, out_dir: Path, mode: str, ev_label) -> None:
     available = [m for m in ["v1_naive","v2_intermediate","v3_arimax","v4_sarimax","v5_causalimpact","v6_glm_gamma"]
                  if m in pivot_df.columns]
     pairs = [(a, b) for i, a in enumerate(available) for b in available[i+1:]]
@@ -262,16 +265,25 @@ def plot_scatter(pivot_df: pd.DataFrame, out_path: Path, mode: str) -> None:
         ax.axvline(0, color="grey", lw=0.6, ls=":")
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    slug = (ev_label.replace(" ", "_").replace("/", "-").replace("(", "").replace(")", "")
+            if ev_label else "all")
+    out = out_dir / f"compare_scatter_{slug}.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"  → Scatter: {out_path}")
+    print(f"  → Scatter [{ev_label or 'all'}]: {out}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 4. Heatmap
 # ══════════════════════════════════════════════════════════════════════════════
 
-def plot_heatmap(df: pd.DataFrame, out_path: Path, mode: str) -> None:
+def plot_heatmap(df: pd.DataFrame, out_dir: Path, mode: str) -> None:
+    """Un PNG per ogni evento."""
+    for ev in df["evento"].unique():
+        _plot_heatmap_single(df[df["evento"] == ev], out_dir, mode, ev)
+
+
+def _plot_heatmap_single(df: pd.DataFrame, out_dir: Path, mode: str, ev_label: str) -> None:
     available = [m for m in ["v1_naive","v2_intermediate","v3_arimax","v4_sarimax","v5_causalimpact","v6_glm_gamma"]
                  if m in df["metodo"].unique()]
 
@@ -295,7 +307,7 @@ def plot_heatmap(df: pd.DataFrame, out_path: Path, mode: str) -> None:
         return
 
     fig, ax = plt.subplots(figsize=(max(6, len(available)*2), max(4, len(pivot)*0.8)))
-    fig.suptitle(f"Guadagni Extra (M€) – Confronto Metodi  [mode={mode}]",
+    fig.suptitle(f"Guadagni Extra (M€) – Confronto Metodi  [mode={mode}]\n{ev_label}",
                  fontsize=11, fontweight="bold")
 
     vmax    = np.nanmax(np.abs(data_np)) + 1e-6
@@ -317,9 +329,11 @@ def plot_heatmap(df: pd.DataFrame, out_path: Path, mode: str) -> None:
                         color="white" if abs(v) > vmax*0.5 else "black")
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    slug = ev_label.replace(" ", "_").replace("/", "-").replace("(", "").replace(")", "")
+    out  = out_dir / f"compare_heatmap_{slug}.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"  → Heatmap: {out_path}")
+    print(f"  → Heatmap [{ev_label}]: {out}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -412,9 +426,9 @@ def main() -> None:
     print_sign_agreement(pivot_raw)
 
     # ── 2–4. Plot ─────────────────────────────────────────────────────────────
-    plot_barplot(df, OUT_DIR / "compare_barplot.png", mode_label)
-    plot_scatter(pivot_raw, OUT_DIR / "compare_scatter.png", mode_label)
-    plot_heatmap(df, OUT_DIR / "compare_heatmap.png", mode_label)
+    plot_barplot(df, OUT_DIR, mode_label)
+    plot_scatter(pivot_raw, OUT_DIR, mode_label)
+    plot_heatmap(df, OUT_DIR, mode_label)
 
     # ── Statistiche ───────────────────────────────────────────────────────────
     available = [m for m in ["v1_naive","v2_intermediate","v3_arimax","v4_sarimax","v5_causalimpact","v6_glm_gamma"]

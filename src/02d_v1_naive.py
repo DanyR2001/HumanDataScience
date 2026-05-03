@@ -64,8 +64,8 @@ EUROBOB_CSV = BASE_DIR / "data" / "Futures" / "Eurobob_B7H1_date.csv"
 EURUSD_CSV  = BASE_DIR / "data" / "raw" / "eurusd.csv"
 _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
 
-PRE_WIN   = 30    # giorni pre-break per stimare la baseline
-POST_WIN  = 30    # giorni post-break per calcolare l'extra profitto
+PRE_WIN   = 40    # giorni pre-break per stimare la baseline
+POST_WIN  = 40    # giorni post-break per calcolare l'extra profitto
 CI_ALPHA  = 0.05   # livello α → intervallo di previsione al 90%
 
 # SEARCH e MIN_SEG rimossi: la detection è centralizzata in 02c (GLM Poisson)

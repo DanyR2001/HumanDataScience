@@ -11,7 +11,7 @@ Pipeline base (senza argomenti):
   02c_p   →  change point detection sul prezzo
   02d     →  analisi controfattuale (legacy)
 
-Pipeline ITS (argomento positivo: v1/v2/v3/v4/cmp o nessuno = tutti):
+Pipeline ITS (argomento positivo: v1/v3/v5/v6/cmp o nessuno = tutti):
   Per OGNI metodo ITS selezionato la pipeline esegue AUTOMATICAMENTE:
     1. 02c --detect margin       → produce theta_results.csv (margine)
     2. 02c --detect price        → produce theta_results.csv (prezzo)
@@ -20,16 +20,22 @@ Pipeline ITS (argomento positivo: v1/v2/v3/v4/cmp o nessuno = tutti):
     5. metodo --mode detected --detect price   → break = θ rilevato sul prezzo
     6. 02d_compare.py            → confronto metodi (solo se tutti i metodi girano)
 
+  Metodi attivi (triangolazione):
+    v1  — OLS Naïve          (frequentista, baseline)
+    v3  — ARIMAX             (serie temporali, autocorrelazione)
+    v5  — BSTS CausalImpact  (bayesiano, state-space)
+    v6  — GLM Gamma          (distribuzione continua positiva, log-link)
+
   I passi 1-2 vengono eseguiti una sola volta all'inizio (non ripetuti per ogni
   metodo), a meno che non venga usato --skip-02c per saltarli (utile se
   theta_results.csv è già aggiornato).
 
 Uso:
   python3 run_all.py                   # solo pipeline base (02a→02d legacy)
-  python3 run_all.py its               # tutti i metodi ITS (v1+v2+v3+v4+cmp)
+  python3 run_all.py its               # tutti i metodi ITS (v1+v3+v5+v6+cmp)
   python3 run_all.py v1                # solo v1 in tutte e 3 le modalità
-  python3 run_all.py v1 v2             # v1 e v2 in tutte e 3 le modalità
-  python3 run_all.py v3 v4 cmp         # v3, v4 e compare
+  python3 run_all.py v1 v3             # v1 e v3 in tutte e 3 le modalità
+  python3 run_all.py v5 v6 cmp         # v5, v6 e compare
   python3 run_all.py its --skip-02c    # salta 02c (usa theta_results.csv esistente)
   python3 run_all.py 02a 02b           # solo step base indicati
 """
@@ -53,10 +59,8 @@ BASE_STEPS = [
 # ── Step ITS ─────────────────────────────────────────────────────────────────
 ITS_STEPS = [
     ("v1",  "02d_v1_naive.py",        "ITS Metodo 1 — OLS Naïve"),
-    ("v2",  "02d_v2_intermediate.py", "ITS Metodo 2 — OLS HAC Newey-West"),
     ("v3",  "02d_v3_arimax.py",       "ITS Metodo 3 — ARIMAX"),
-    ("v4",  "02d_v4_transfer.py",     "ITS Metodo 4 — SARIMAX"),
-    ("v5",  "02d_v5_causalimpact.py",  "ITS Metodo 5 — BSTS CausalImpact"),
+    ("v5",  "02d_v5_causalimpact.py", "ITS Metodo 5 — BSTS CausalImpact"),
     ("v6",  "02d_v6_glm_gamma.py",    "ITS Metodo 6 — GLM Gamma log-link"),
     ("cmp", "02d_compare.py",         "ITS Confronto — Metodi"),
 ]

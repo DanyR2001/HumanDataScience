@@ -106,8 +106,8 @@ EUROBOB_CSV = BASE_DIR / "data" / "Futures" / "Eurobob_B7H1_date.csv"
 EURUSD_CSV  = BASE_DIR / "data" / "raw" / "eurusd.csv"
 _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
 
-PRE_WIN     = 90       # giorni pre-break per stimare la baseline Gamma
-POST_WIN    = 30       # giorni post-break per calcolare l'extra profitto
+PRE_WIN     = 40       # giorni pre-break per stimare la baseline Gamma
+POST_WIN    = 40       # giorni post-break per calcolare l'extra profitto
 SEARCH      = 30       # finestra ±SEARCH intorno allo shock (detection L2)
 HALF_WIN    = 30       # semi-finestra Chow test
 CI_ALPHA    = 0.05     # α → CI/PI al 95%  (z ≈ 1.96)

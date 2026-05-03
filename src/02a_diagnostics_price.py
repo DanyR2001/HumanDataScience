@@ -1,436 +1,135 @@
 #!/usr/bin/env python3
 """
-02_change_point_detection_margin.py
-=====================================
-Change-point detection sul MARGINE (prezzo netto pompa − futures €/L)
-benzina e gasolio in corrispondenza di eventi geopolitici rilevanti.
+02b_diagnostics_margin.py  (v2 — test statisticamente rigorosi + H₀)
+======================================================================
 
-Metodologia — Rasoio di Occam (dal più semplice al più sofisticato)
-────────────────────────────────────────────────────────────────────
-  L1 · Sliding-window two-sample t-test
-       Finestra di HALF_WIN=40 giorni per lato; il punto di rottura τ
-       scorre da –SEARCH giorni a +SEARCH giorni rispetto all'evento
-       con step=1 (risoluzione giornaliera). Correzione p-value: Bonferroni.
-       → restituisce 1 break point (il più forte).
+DIAGNOSTICHE (finestra per-evento × carburante):
+  1. Stazionarietà     — ADF + KPSS dual-test sulla serie nella finestra
+                         (nota: potenza limitata su finestre brevi)
+  2. Autocorrelazione  — AR(p) con selezione AIC → Ljung-Box sui RESIDUI
+                         (non sulla serie grezza: renderebbe il test un non-test)
+  3. Normalità         — Jarque-Bera (primario, asintoticamente valido)
+                         + D'Agostino K² (secondario, migliore per n moderato)
+                         + Shapiro-Wilk ausiliario SOLO se n ≤ 200
+                         — applicati ai residui AR, non alle prime differenze
+  4. Omoschedasticità  — Fligner-Killeen (primario, robusto a non-normalità)
+                         + Levene (secondario, informativo)
+                         FLAG: se ARCH rilevato → Levene è inaffidabile
+  5. Effetti ARCH      — Engle ARCH-LM applicato ai RESIDUI AR(p)
+                         (non alla serie grezza o alle differenze prime)
+  Ordine di esecuzione: ARCH e autocorrelazione prima, i loro risultati
+  contestualizzano normalità e omoschedasticità.
 
-  L2 · CUSUM (Cumulative SUM of deviations)
-       Deviazione cumulata dalla media pre-evento sul livello di prezzo.
-       Picco/valle = momento di rottura strutturale. Semplice, visivo.
-       → 1 break point.
+H₀ FINALE (per evento × carburante + sintesi aggregata):
+  ─────────────────────────────────────────────────────────────────────
+  Ipotesi Nulla (H₀):
+    In prossimità temporale di shock geopolitici che coinvolgono Paesi
+    fornitori di petrolio greggio o semilavorati verso l'Italia,
+    i distributori italiani di carburante NON generano profitti anomali:
+    gli aumenti dei prezzi risultano coerenti con la crescita dei costi
+    di approvvigionamento e delle materie prime.
 
-  L3 · Binary Segmentation (ruptures – BinSeg, costo L2)
-       Cerca esattamente N break points; usa BIC per scegliere N ottimale
-       tra 1 e MAX_BKPS. → potenzialmente MULTIPLI break point.
+  Test principale: Mann-Whitney U one-sided (H₁: margine_post > margine_pre)
+    — non parametrico, non assume normalità, robusto a outlier
+    — pre = H0_PRE_DAYS giorni precedenti lo shock
+    — post = H0_POST_DAYS giorni successivi allo shock
+  Effect size: Cliff's δ  (interpretazione: negligible/small/medium/large)
+  Sintesi multidimensionale (Fisher combination):
+    • Per evento  — combina p-value di benzina + gasolio
+    • Per carburante — combina p-value dei 3 eventi
+    • Globale     — combina tutti i (evento × carburante) con dati sufficienti
+  ─────────────────────────────────────────────────────────────────────
 
-  L4 · PELT – Pruned Exact Linear Time (ruptures, penalizzazione BIC)
-       Soluzione globale esatta con N incognito; O(n log n).
-       → potenzialmente MULTIPLI break point.
-
-Finestra ottimale e CLT
-────────────────────────
-  Prezzi giornalieri: autocorrelazione AR(1) con φ ≈ 0.2–0.3.
-  Dimensione effettiva del campione: n_eff ≈ n·(1-φ)/(1+φ).
-  Con φ=0.3 → n_eff = n·0.54.
-  Per n_eff ≥ 30 (CLT solido) serve n ≥ 56 → uso HALF_WIN=40 (minimo
-  pratico, n_eff≈22) con la consapevolezza che il test t è approssimato.
-  Se vuoi CLT garantito imposta HALF_WIN=60.
-
-  Sliding step = 1 giorno (risoluzione massima, 2·SEARCH+1 test totali;
-  si applica correzione Bonferroni sui p-value).
-  Step = 7 riduce il multiple testing ma perde risoluzione infrasettimanale.
-
-Dipendenze extra:
-  pip install ruptures
+Output in data/plots/diagnostics/margin/:
+  00_margine_serie_storica.png
+  0N_test__evento__fuel.png   (grafici diagnostici, uno per test × evento × fuel)
+  h0_verdict_matrix.png       — matrice evento × carburante con verdetto H₀
+  h0_distributions.png        — violin plot margini pre/post per ogni cella
+  risultati_riepilogo.csv
+  risultati_stazionarieta.csv
+  risultati_autocorrelazione.csv
+  risultati_normalita.csv
+  risultati_omoschedasticita.csv
+  risultati_arch.csv
+  h0_per_cella.csv
+  h0_sintesi.csv
 """
 
 from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Optional
 
 import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.stats import chi2 as chi2_dist
+from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch
+from statsmodels.tsa.ar_model import AutoReg
+from statsmodels.tsa.stattools import adfuller, kpss
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent / "utils"))
 from conversions import GAS_OIL, EUROBOB as EUROBOB_HC, load_eurusd, usd_ton_to_eur_liter
 
-try:
-    import ruptures as rpt
-    HAS_RUPTURES = True
-except ImportError:
-    HAS_RUPTURES = False
-    warnings.warn("ruptures non installato – L3/L4 disabilitati. "
-                  "Installa con: pip install ruptures")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# n_eff helpers (AR(1) autocorrelation correction)
-# ══════════════════════════════════════════════════════════════════════════════
-def _phi_ar1(x: np.ndarray) -> float:
-    """Lag-1 autocorrelation (AR(1) coefficient) — clamped to (-0.99, 0.99)."""
-    if len(x) < 3:
-        return 0.0
-    x = x - x.mean()
-    r = float(np.corrcoef(x[:-1], x[1:])[0, 1])
-    return float(np.clip(r, -0.99, 0.99))
-
-
-def _n_eff(x: np.ndarray) -> float:
-    """Effective sample size corrected for AR(1) autocorrelation."""
-    phi = _phi_ar1(x)
-    return max(2.0, len(x) * (1 - phi) / (1 + phi))
-
-
-def _welch_neff(a: np.ndarray, b: np.ndarray):
-    """
-    Welch t-test with n_eff-corrected degrees of freedom.
-    Returns (t_stat, p_value).
-    """
-    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
-    na, nb = _n_eff(a), _n_eff(b)
-    va, vb = a.var(ddof=1) / na, b.var(ddof=1) / nb
-    se = np.sqrt(va + vb)
-    if se == 0:
-        return 0.0, 1.0
-    t = (a.mean() - b.mean()) / se
-    # Welch–Satterthwaite df
-    df = (va + vb) ** 2 / (va ** 2 / (na - 1) + vb ** 2 / (nb - 1))
-    p = 2 * stats.t.sf(abs(t), df=df)
-    return float(t), float(p)
-
-
-# ── Configurazione ─────────────────────────────────────────────────────────────
-BASE_DIR     = Path(__file__).parent
-DAILY_CSV    = BASE_DIR / "data" / "processed" / "daily_fuel_prices_all.csv"
-GASOIL_CSV   = BASE_DIR / "data" / "Futures" / "London Gas Oil Futures Historical Data.csv"
-EUROBOB_CSV  = BASE_DIR / "data" / "Futures" / "Eurobob_B7H1_date.csv"
-EURUSD_CSV   = BASE_DIR / "data" / "raw" / "eurusd.csv"
-OUT_DIR      = BASE_DIR / "data" / "plots" / "change_point" / "margin"
+# ── Configurazione ────────────────────────────────────────────────────────────
+BASE_DIR    = Path(__file__).parent
+DAILY_CSV   = BASE_DIR / "data" / "processed" / "daily_fuel_prices_all.csv"
+GASOIL_CSV  = BASE_DIR / "data" / "Futures" / "London Gas Oil Futures Historical Data.csv"
+EUROBOB_CSV = BASE_DIR / "data" / "Futures" / "Eurobob_B7H1_date.csv"
+EURUSD_CSV  = BASE_DIR / "data" / "raw" / "eurusd.csv"
+OUT_DIR     = BASE_DIR / "data" / "plots" / "diagnostics" / "margin"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-HALF_WIN   = 40
-SEARCH     = 40
-STEP       = 1
-MAX_BKPS   = 5
-MIN_SIZE   = 14
+ALPHA        = 0.05
+HALF_WIN     = 45          # Alzato da 30 a 45: n_eff ≈ 24 con φ=0.3 (più stabile)
+LB_LAGS      = [5, 10, 20]
+ARCH_LAGS    = 10
+AR_MAX_P     = 12          # Ordine massimo AR per selezione AIC
+H0_PRE_DAYS  = 60          # Giorni pre-shock per test H₀ (dalla serie completa)
+H0_POST_DAYS = 45          # Giorni post-shock per test H₀
 
 FUELS = {
-    "benzina": ("margin_benzina", "#E63946"),
-    "gasolio": ("margin_gasolio", "#1D3557"),
+    "benzina": ("#E63946", EUROBOB_HC),
+    "gasolio": ("#1D3557", GAS_OIL),
 }
 
 EVENTS: dict[str, dict] = {
     "Ucraina (Feb 2022)": {
         "shock":     pd.Timestamp("2022-02-24"),
-        "pre_start": pd.Timestamp("2021-12-01"),
-        "post_end":  pd.Timestamp("2022-04-24"),
+        "pre_start": pd.Timestamp("2021-11-15"),   # ≈3 mesi pre
+        "post_end":  pd.Timestamp("2022-05-15"),   # ≈3 mesi post
         "color":     "#e74c3c",
         "label":     "Russia-Ucraina\n(24 feb 2022)",
     },
     "Iran-Israele (Giu 2025)": {
         "shock":     pd.Timestamp("2025-06-13"),
-        "pre_start": pd.Timestamp("2025-04-13"),
-        "post_end":  pd.Timestamp("2025-08-13"),
+        "pre_start": pd.Timestamp("2025-03-13"),
+        "post_end":  pd.Timestamp("2025-09-13"),
         "color":     "#e67e22",
         "label":     "Iran-Israele\n(13 giu 2025)",
     },
     "Hormuz (Feb 2026)": {
         "shock":     pd.Timestamp("2026-02-28"),
-        "pre_start": pd.Timestamp("2025-12-28"),
-        "post_end":  pd.Timestamp("2026-04-30"),
+        "pre_start": pd.Timestamp("2025-11-28"),
+        "post_end":  pd.Timestamp("2026-05-15"),
         "color":     "#8e44ad",
         "label":     "Stretto di Hormuz\n(28 feb 2026)",
     },
 }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# L1 – Sliding-window t-test
-# ══════════════════════════════════════════════════════════════════════════════
-def sliding_ttest(
-    series: pd.Series,
-    shock: pd.Timestamp,
-    half_win: int = HALF_WIN,
-    search: int   = SEARCH,
-    step: int     = STEP,
-) -> pd.DataFrame:
-    """
-    Per ogni candidato τ in [shock–search, shock+search] (step=step giorni),
-    esegue un Welch t-test tra i HALF_WIN giorni prima di τ e i HALF_WIN dopo.
-    Restituisce DataFrame ordinato per |t_stat| decrescente.
-
-    Nota sul CLT:
-      Con half_win=40 e autocorrelazione AR(1) φ≈0.3,
-      n_eff ≈ 40 * 0.54 ≈ 22 < 30  →  CLT approssimativo.
-      Imposta half_win=60 per CLT garantito.
-    """
-    idx   = series.index  # DatetimeIndex
-    rows  = []
-    n_tests = 0
-
-    candidates = pd.date_range(
-        shock - pd.Timedelta(days=search),
-        shock + pd.Timedelta(days=search),
-        freq=f"{step}D",
-    )
-
-    for tau in candidates:
-        pre  = series[(idx >= tau - pd.Timedelta(days=half_win)) & (idx < tau)].dropna()
-        post = series[(idx >= tau) & (idx < tau + pd.Timedelta(days=half_win))].dropna()
-        if len(pre) < 5 or len(post) < 5:
-            continue
-        t, p = _welch_neff(pre.values, post.values)
-        delta = post.mean() - pre.mean()
-        rows.append({"tau": tau, "t_stat": t, "p_raw": p, "delta_mean": delta,
-                     "n_pre": len(pre), "n_post": len(post)})
-        n_tests += 1
-
-    if not rows:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(rows)
-    # Correzione Bonferroni
-    df["p_bonf"] = (df["p_raw"] * n_tests).clip(upper=1.0)
-    df["abs_t"]  = df["t_stat"].abs()
-    return df.sort_values("abs_t", ascending=False).reset_index(drop=True)
+_OK   = "#2ecc71"
+_WARN = "#f39c12"
+_FAIL = "#e74c3c"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# L2 – CUSUM
+# Caricamento dati  (identico alla v1)
 # ══════════════════════════════════════════════════════════════════════════════
-def cusum(
-    series: pd.Series,
-    shock: pd.Timestamp,
-    pre_window: int = HALF_WIN,
-) -> tuple[pd.Series, pd.Timestamp]:
-    """
-    CUSUM delle deviazioni dalla media pre-evento.
-    Restituisce (serie CUSUM, data del massimo |CUSUM|).
-    """
-    baseline = series[series.index < shock].tail(pre_window).mean()
-    dev      = series - baseline
-    cs       = dev.cumsum()
-    peak_idx = cs.abs().idxmax()
-    return cs, peak_idx
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# L3 – Binary Segmentation  (ruptures)
-# ══════════════════════════════════════════════════════════════════════════════
-def binseg_detect(
-    series: pd.Series,
-    max_bkps: int  = MAX_BKPS,
-    min_size: int  = MIN_SIZE,
-    model: str     = "rbf",
-) -> dict[int, list[pd.Timestamp]]:
-    """
-    BinSeg su 1..max_bkps break point; sceglie N ottimale con BIC.
-    Restituisce {n_bkps: [date break point]} per ogni N testato,
-    più la chiave 'best' con N ottimale.
-    """
-    if not HAS_RUPTURES:
-        return {}
-
-    signal = series.values.reshape(-1, 1)
-    algo   = rpt.Binseg(model=model, min_size=min_size).fit(signal)
-
-    results: dict = {}
-    costs   = []
-
-    for n in range(1, max_bkps + 1):
-        try:
-            bkps = algo.predict(n_bkps=n)  # indici (1-based, ultimo = len)
-        except Exception:
-            continue
-        dates = [series.index[b - 1] for b in bkps[:-1]]  # escludi sentinel
-        results[n] = dates
-        # Costo BIC: costo_residuo + n * log(T)
-        cost = algo.cost.sum_of_costs(bkps)
-        bic  = cost + n * np.log(len(signal))
-        costs.append((n, bic))
-
-    if costs:
-        best_n = min(costs, key=lambda x: x[1])[0]
-        results["best"] = results[best_n]
-        results["best_n"] = best_n
-        results["bic_curve"] = costs
-
-    return results
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# L4 – PELT  (ruptures)
-# ══════════════════════════════════════════════════════════════════════════════
-def pelt_detect(
-    series: pd.Series,
-    min_size: int = MIN_SIZE,
-    model: str    = "rbf",
-) -> list[pd.Timestamp]:
-    """
-    PELT con penalizzazione BIC (pen = log(T)).
-    Restituisce lista di date dei change point rilevati.
-    """
-    if not HAS_RUPTURES:
-        return []
-
-    signal = series.values.reshape(-1, 1)
-    pen    = np.log(len(signal))  # BIC
-    try:
-        algo = rpt.Pelt(model=model, min_size=min_size).fit(signal)
-        bkps = algo.predict(pen=pen)
-    except Exception as e:
-        warnings.warn(f"PELT fallito: {e}")
-        return []
-
-    return [series.index[b - 1] for b in bkps[:-1]]
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Plotting per evento + carburante
-# ══════════════════════════════════════════════════════════════════════════════
-def plot_event_fuel(
-    event_name: str,
-    ev: dict,
-    series: pd.Series,
-    fuel_label: str,
-    fuel_color: str,
-    ax_price:  plt.Axes,
-    ax_cusum:  plt.Axes,
-    ax_tstat:  plt.Axes,
-    ax_bic:    plt.Axes,
-) -> dict:
-    """Disegna i 4 pannelli per un singolo carburante e restituisce risultati."""
-
-    # ── Slice della finestra ──────────────────────────────────────────────────
-    win = series[(series.index >= ev["pre_start"]) &
-                 (series.index <= ev["post_end"])].dropna()
-    if len(win) < 2 * HALF_WIN:
-        ax_price.set_title(f"{fuel_label} – dati insufficienti", fontsize=9)
-        return {}
-
-    shock = ev["shock"]
-    color = fuel_color
-
-    # ── L1: sliding t-test ────────────────────────────────────────────────────
-    ttest_df = sliding_ttest(win, shock)
-    best_tau = ttest_df.iloc[0]["tau"]   if not ttest_df.empty else shock
-    best_t   = ttest_df.iloc[0]["t_stat"] if not ttest_df.empty else 0
-    best_p   = ttest_df.iloc[0]["p_bonf"] if not ttest_df.empty else 1
-    delta    = ttest_df.iloc[0]["delta_mean"] if not ttest_df.empty else 0
-
-    # ── L2: CUSUM ─────────────────────────────────────────────────────────────
-    cs, cusum_peak = cusum(win, shock)
-
-    # ── L3: BinSeg ───────────────────────────────────────────────────────────
-    binseg_res = binseg_detect(win)
-    binseg_best = binseg_res.get("best", [])
-
-    # ── L4: PELT ─────────────────────────────────────────────────────────────
-    pelt_breaks = pelt_detect(win)
-
-    # ════ PANNELLO 1: prezzi + break lines  (zoom ±50 giorni dallo shock) ══════
-    zoom_start = shock - pd.Timedelta(days=50)
-    zoom_end   = shock + pd.Timedelta(days=50)
-    win_zoom   = win[(win.index >= zoom_start) & (win.index <= zoom_end)]
-
-    ax_price.plot(win_zoom.index, win_zoom.values, color=color, lw=0.9, label=fuel_label)
-    ax_price.axvline(shock,     color=ev["color"], lw=1.5, ls="--", label="Evento")
-    ax_price.axvline(best_tau,  color=color, lw=1.2, ls=":", alpha=0.8,
-                     label=f"L1 τ={best_tau.date()}")
-    ax_price.axvline(cusum_peak, color="darkorange", lw=1.0, ls="-.",
-                     label=f"L2 CUSUM={cusum_peak.date()}")
-    for i, d in enumerate(pelt_breaks):
-        if zoom_start <= d <= zoom_end:
-            ax_price.axvline(d, color="green", lw=0.8, ls=":", alpha=0.7,
-                             label=f"L4 PELT" if i == 0 else "")
-    for i, d in enumerate(binseg_best):
-        if zoom_start <= d <= zoom_end:
-            ax_price.axvline(d, color="purple", lw=0.8, ls=":", alpha=0.7,
-                             label=f"L3 BinSeg" if i == 0 else "")
-    ax_price.set_xlim(zoom_start, zoom_end)
-    ax_price.set_ylabel("Margine (€/L)", fontsize=8)
-    ax_price.legend(fontsize=6, loc="upper left", ncol=2)
-    ax_price.grid(axis="y", alpha=0.25)
-    ax_price.xaxis.set_major_formatter(mdates.DateFormatter("%d %b %Y"))
-    ax_price.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
-    plt.setp(ax_price.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=7)
-
-    # ════ PANNELLO 2: CUSUM ═══════════════════════════════════════════════════
-    ax_cusum.plot(cs.index, cs.values, color=color, lw=0.9)
-    ax_cusum.axhline(0, color="grey", lw=0.7, ls="--")
-    ax_cusum.axvline(shock,      color=ev["color"], lw=1.5, ls="--")
-    ax_cusum.axvline(cusum_peak, color="darkorange", lw=1.2, ls="-.")
-    ax_cusum.set_ylabel("CUSUM margine (€/L)", fontsize=8)
-    ax_cusum.fill_between(cs.index, cs.values, 0,
-                          where=cs.values > 0, alpha=0.15, color=color)
-    ax_cusum.fill_between(cs.index, cs.values, 0,
-                          where=cs.values < 0, alpha=0.15, color="green")
-    ax_cusum.grid(axis="y", alpha=0.25)
-    ax_cusum.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-
-    # ════ PANNELLO 3: t-stat sliding — solo τ dove margine CRESCE (Δ > 0) ══════
-    if not ttest_df.empty:
-        rising = ttest_df[ttest_df["delta_mean"] > 0]
-        ax_tstat.plot(rising["tau"], rising["t_stat"].abs(),
-                      color=color, lw=0.9, label="Δ > 0 (margine cresce)")
-        ax_tstat.axvline(shock,    color=ev["color"], lw=1.5, ls="--", label="Evento")
-        if not rising.empty and best_tau in rising["tau"].values:
-            ax_tstat.axvline(best_tau, color=color, lw=1.2, ls=":", label=f"τ={best_tau.date()}")
-        ax_tstat.axhline(stats.t.ppf(0.975, df=HALF_WIN * 2 - 2),
-                         color="grey", lw=0.7, ls=":", label="α=0.05")
-        ax_tstat.set_ylabel("|t-stat|  (solo Δ>0)", fontsize=8)
-        ax_tstat.legend(fontsize=6)
-        sig = "★" if best_p < 0.05 else ""
-        ax_tstat.set_title(
-            f"L1 sliding t-test  |  τ={best_tau.date()}  "
-            f"Δ={delta:+.4f} €/L  p_bonf={best_p:.3f}{sig}",
-            fontsize=7, pad=2
-        )
-    ax_tstat.grid(axis="y", alpha=0.25)
-    ax_tstat.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-
-    # ════ PANNELLO 4: BIC curve BinSeg ════════════════════════════════════════
-    if binseg_res.get("bic_curve"):
-        ns, bics = zip(*binseg_res["bic_curve"])
-        ax_bic.plot(ns, bics, marker="o", color=color, lw=1)
-        best_n = binseg_res.get("best_n", 1)
-        ax_bic.axvline(best_n, color="grey", lw=0.8, ls="--",
-                       label=f"N ottimale={best_n}")
-        ax_bic.set_xlabel("N break point", fontsize=8)
-        ax_bic.set_ylabel("BIC", fontsize=8)
-        ax_bic.set_xticks(list(ns))
-        ax_bic.legend(fontsize=6)
-        ax_bic.set_title(
-            f"L3 BinSeg: {len(binseg_best)} break  |  "
-            f"L4 PELT: {len(pelt_breaks)} break  →  "
-            + (", ".join(str(d.date()) for d in pelt_breaks) if pelt_breaks else "nessuno"),
-            fontsize=7, pad=2
-        )
-    else:
-        ax_bic.text(0.5, 0.5, "ruptures non disponibile",
-                    ha="center", va="center", transform=ax_bic.transAxes, fontsize=8)
-    ax_bic.grid(alpha=0.25)
-
-    return {
-        "L1_tau":      best_tau,
-        "L1_t":        best_t,
-        "L1_p_bonf":   best_p,
-        "L1_delta":    delta,
-        "L2_cusum":    cusum_peak,
-        "L3_binseg":   binseg_best,
-        "L3_best_n":   binseg_res.get("best_n"),
-        "L4_pelt":     pelt_breaks,
-    }
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Main
-# ══════════════════════════════════════════════════════════════════════════════
 def load_futures_eurl(path: Path, hc, eurusd: pd.Series) -> pd.Series:
     df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
     df["date"] = pd.to_datetime(df["Date"], format="%m/%d/%Y", errors="coerce")
@@ -446,22 +145,17 @@ def load_futures_b7h1(path: Path, hc, eurusd: pd.Series) -> pd.Series:
         ts = pd.to_numeric(df["timestamp"], errors="coerce")
         df["date"] = pd.to_datetime(ts, unit="s", utc=True).dt.tz_localize(None).dt.normalize()
     else:
-        _IT_MONTHS = {
-            "gen": "Jan", "feb": "Feb", "mar": "Mar", "apr": "Apr",
-            "mag": "May", "giu": "Jun", "lug": "Jul", "ago": "Aug",
-            "set": "Sep", "ott": "Oct", "nov": "Nov", "dic": "Dec",
-        }
-        def _parse_it_date(s: str) -> pd.Timestamp:
-            for it, en in _IT_MONTHS.items():
-                s = s.replace(it, en)
+        _IT = {"gen":"Jan","feb":"Feb","mar":"Mar","apr":"Apr","mag":"May","giu":"Jun",
+               "lug":"Jul","ago":"Aug","set":"Sep","ott":"Oct","nov":"Nov","dic":"Dec"}
+        def _parse(s: str):
+            for it, en in _IT.items(): s = s.replace(it, en)
             return pd.to_datetime(s, dayfirst=True, errors="coerce")
-        df["date"] = df["data"].astype(str).apply(_parse_it_date)
+        df["date"] = df["data"].astype(str).apply(_parse)
     df["price_usd_ton"] = pd.to_numeric(df["chiusura"], errors="coerce")
-    df = (df.dropna(subset=["date", "price_usd_ton"])
-            .sort_values("date").set_index("date"))
+    df = df.dropna(subset=["date","price_usd_ton"]).sort_values("date").set_index("date")
     df = df[~df.index.duplicated(keep="first")]
-    print(f"  B7H1: {len(df)} righe  "
-          f"({df.index.min().date()} → {df.index.max().date()})")
+    n = len(df)
+    print(f"  B7H1: {n} righe  ({df.index.min().date()} → {df.index.max().date()})")
     return usd_ton_to_eur_liter(df["price_usd_ton"], eurusd, hc)
 
 
@@ -475,200 +169,1237 @@ def build_margin(daily: pd.DataFrame,
         ws_benz = eurobob_eurl.reindex(df.index, method="ffill")
         df["margin_benzina"] = df["benzina_net"] - ws_benz
     else:
-        import numpy as np
         df["margin_benzina"] = np.nan
     return df
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Grafico 0 – Serie storica completa con PELT globale
+# Helper: fit AR(p) con selezione AIC
 # ══════════════════════════════════════════════════════════════════════════════
-def _plot_global_margins(daily: pd.DataFrame, out_dir: Path) -> None:
-    """
-    Grafico unico con:
-      • margine benzina e gasolio sull'intera serie storica
-      • break point PELT rilevati sull'intera serie (linee verdi)
-      • linee verticali per i tre eventi geopolitici
-    Salva: 00_margine_serie_storica_globale.png
-    """
-    fig, axes = plt.subplots(2, 1, figsize=(16, 8), sharex=True)
-    fig.suptitle("Serie storica completa dei margini  –  Benzina e Gasolio\n"
-                 "(con change point PELT globali e eventi geopolitici)",
-                 fontsize=12, fontweight="bold")
 
-    fuel_cfg = [
-        ("margin_benzina", "Benzina", "#E63946"),
-        ("margin_gasolio", "Gasolio", "#1D3557"),
-    ]
+def fit_ar_model(series: pd.Series, max_p: int = AR_MAX_P) -> tuple:
+    """
+    Seleziona l'ordine p di un AR(p) per AIC su `series`.
+    Restituisce (residuals: np.ndarray, p_selected: int, aic: float).
 
-    for ax, (col, label, color) in zip(axes, fuel_cfg):
-        series = daily[col].dropna()
-        if series.empty:
-            ax.set_title(f"{label} – dati non disponibili", fontsize=9)
+    Nota: se il fit fallisce per tutti gli ordini, usa le prime differenze
+    come proxy dei residui e segnala p=1 (fallback conservativo).
+    """
+    s = series.dropna().values
+    n = len(s)
+    # Limita max_p: almeno 4 obs per parametro
+    effective_max = min(max_p, n // 4)
+    if effective_max < 1:
+        # Serie troppo corta — usa differenze prime come fallback
+        return np.diff(s), 1, np.nan, True
+
+    best_aic, best_p, best_resid = np.inf, 1, None
+    for p in range(1, effective_max + 1):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                fit = AutoReg(s, lags=p, old_names=False).fit()
+            if fit.aic < best_aic:
+                best_aic, best_p, best_resid = fit.aic, p, fit.resid
+        except Exception:
             continue
 
-        # PELT sull'intera serie
-        pelt_global = pelt_detect(series)
+    if best_resid is None:
+        return np.diff(s), 1, np.nan, True
 
-        ax.plot(series.index, series.values, color=color, lw=0.85, label=label)
-        ax.axhline(series.mean(), color=color, lw=0.7, ls="--", alpha=0.5,
-                   label=f"Media = {series.mean():.3f} €/L")
+    return best_resid, best_p, best_aic, False
 
-        # Break point PELT
-        for i, d in enumerate(pelt_global):
-            ax.axvline(d, color="green", lw=1.0, ls=":", alpha=0.75,
-                       label="PELT break" if i == 0 else "")
 
-        # Eventi geopolitici
-        for ev_name, ev in EVENTS.items():
-            ax.axvline(ev["shock"], color=ev["color"], lw=1.4, ls="--", alpha=0.85,
-                       label=ev["label"].replace("\n", " "))
+# ══════════════════════════════════════════════════════════════════════════════
+# Test 1 — Stazionarietà  (ADF + KPSS dual-test)
+# ══════════════════════════════════════════════════════════════════════════════
 
-        ax.set_ylabel("Margine (€/L)", fontsize=9)
-        ax.set_title(f"{label}  –  {len(pelt_global)} break point PELT rilevati",
-                     fontsize=9, fontweight="bold")
-        ax.legend(fontsize=7, loc="upper left", ncol=3)
+def test_stationarity(series: pd.Series) -> dict:
+    """
+    ADF (H₀: radice unitaria) + KPSS (H₀: stazionario).
+    Due lati: ADF rifiuta UR → stazionario; KPSS non rifiuta → stazionario.
+    Potenza limitata su n < 60 — il risultato è orientativo sulla finestra evento.
+    """
+    s = series.dropna()
+    n = len(s)
+
+    adf_stat, adf_p = adfuller(s, autolag="AIC")[:2]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        kpss_stat, kpss_p, *_ = kpss(s, regression="c", nlags="auto")
+
+    adf_ok  = adf_p < ALPHA        # rifiuta H₀-UR → segnale stazionarietà
+    kpss_ok = kpss_p > ALPHA       # non rifiuta H₀-staz
+
+    power_note = ""
+    if n < 60:
+        power_note = f" [ATTENZIONE: n={n}<60, potenza ridotta]"
+
+    if adf_ok and kpss_ok:
+        status = "OK"
+    elif adf_ok or kpss_ok:
+        status = "⚠ WARN"
+    else:
+        status = "✗ FAIL"
+
+    return {
+        "adf_stat": adf_stat, "adf_p": adf_p, "adf_ok": adf_ok,
+        "kpss_stat": kpss_stat, "kpss_p": kpss_p, "kpss_ok": kpss_ok,
+        "n": n, "power_note": power_note, "status": status,
+        "detail": (f"ADF p={adf_p:.3f} {'✓' if adf_ok else '✗'} | "
+                   f"KPSS p={kpss_p:.3f} {'✓' if kpss_ok else '✗'}"
+                   f"{power_note}"),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Test 2 — Autocorrelazione  (AR(p) → Ljung-Box sui RESIDUI)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_autocorrelation(series: pd.Series) -> dict:
+    """
+    Fit AR(p) con AIC, poi Ljung-Box sui RESIDUI.
+    Applicarlo alla serie grezza dimostrerebbe solo che i prezzi sono
+    autocorrelati (cosa nota a priori) — non è informativo.
+    L'LB sui residui testa se la struttura AR scelta è sufficiente.
+    """
+    s = series.dropna()
+    residuals, p_sel, aic, fallback = fit_ar_model(s)
+
+    lb = acorr_ljungbox(residuals, lags=LB_LAGS, return_df=True)
+    lb_fail = (lb["lb_pvalue"] < ALPHA).any()
+    lb_summary = {int(lag): round(float(row["lb_pvalue"]), 3)
+                  for lag, row in lb.iterrows()}
+
+    phi = float(s.autocorr(lag=1))
+    phi_c = float(np.clip(phi, -0.999, 0.999))
+    n = len(s)
+    n_eff = max(1, int(n * (1 - phi_c) / (1 + phi_c)))
+
+    fallback_note = " [FALLBACK: differenze prime]" if fallback else ""
+    status = "✗ FAIL" if lb_fail else "OK"
+
+    return {
+        "ar_order": p_sel, "aic": aic, "phi_ar1": phi,
+        "n": n, "n_eff": n_eff,
+        "lb": lb_summary, "lb_fail": lb_fail,
+        "residuals": residuals,   # passato ai test normalità/ARCH
+        "fallback": fallback, "status": status,
+        "detail": (f"AR({p_sel}) AIC={aic:.1f if not np.isnan(aic) else 'n.d.'} | "
+                   f"φ={phi:.3f}  n_eff={n_eff}/{n} | "
+                   f"LB-residui p({LB_LAGS})={list(lb_summary.values())}"
+                   f"{fallback_note}"),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Test 3 — Normalità  (JB + D'Agostino K² + SW ausiliario)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_normality(ar_residuals: np.ndarray) -> dict:
+    """
+    Test applicati ai RESIDUI AR (non alle differenze prime):
+      • Jarque-Bera     — primario: asintoticamente χ²(2), valido per n grande.
+                          Basato su skewness + kurtosis.
+      • D'Agostino K²   — secondario: migliore potenza per n moderato (30-300).
+                          scipy.stats.normaltest.
+      • Shapiro-Wilk    — ausiliario SOLO se n ≤ 200: tende a rifiutare
+                          sistematicamente per n > 200 anche per deviazioni
+                          praticamente trascurabili.
+    Nota: la non-normalità non invalida l'ITS se n_eff ≥ 30 (CLT),
+    ma informa sulla scelta del metodo (es. v6 GLM Gamma).
+    """
+    data = np.asarray(ar_residuals, dtype=float)
+    data = data[np.isfinite(data)]
+    n = len(data)
+
+    jb_stat, jb_p   = stats.jarque_bera(data)
+    dag_stat, dag_p = stats.normaltest(data)
+
+    if n <= 200:
+        sw_stat, sw_p = stats.shapiro(data)
+        sw_note = ""
+    else:
+        sw_stat, sw_p = np.nan, np.nan
+        sw_note = f" [SW disabilitato: n={n}>200, perde controllo dimensione]"
+
+    skewness  = float(stats.skew(data))
+    kurt_exc  = float(stats.kurtosis(data))   # eccesso rispetto a normale
+
+    # Verdetto: JB e D'Agostino concordano su H₀?
+    jb_ok  = jb_p  > ALPHA
+    dag_ok = dag_p > ALPHA
+    sw_ok  = (sw_p > ALPHA) if not np.isnan(sw_p) else True  # non voto se n.d.
+
+    if jb_ok and dag_ok:
+        status = "OK"
+    elif jb_ok or dag_ok:
+        status = "⚠ WARN"
+    else:
+        status = "✗ FAIL"
+
+    return {
+        "n_residuals": n,
+        "jb_stat": jb_stat, "jb_p": jb_p, "jb_ok": jb_ok,
+        "dag_stat": dag_stat, "dag_p": dag_p, "dag_ok": dag_ok,
+        "sw_stat": sw_stat, "sw_p": sw_p, "sw_ok": sw_ok,
+        "skewness": skewness, "kurt_excess": kurt_exc,
+        "sw_note": sw_note, "status": status,
+        "detail": (f"JB p={jb_p:.3f} {'✓' if jb_ok else '✗'} | "
+                   f"D'Agostino p={dag_p:.3f} {'✓' if dag_ok else '✗'} | "
+                   f"skew={skewness:.2f}  kurt_exc={kurt_exc:.2f}"
+                   f"{sw_note}"),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Test 4 — Effetti ARCH  (Engle ARCH-LM sui RESIDUI AR)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_arch(ar_residuals: np.ndarray) -> dict:
+    """
+    Engle ARCH-LM applicato ai RESIDUI AR (non alla serie grezza).
+    Se ARCH è rilevato → Levene in test_homoscedasticity è inaffidabile.
+    """
+    data = np.asarray(ar_residuals, dtype=float)
+    data = data[np.isfinite(data)]
+    try:
+        lm_stat, lm_p, f_stat, f_p = het_arch(data, nlags=ARCH_LAGS)
+        arch_detected = lm_p < ALPHA
+        status = "✗ FAIL (volatility clustering)" if arch_detected else "OK"
+        detail = f"ARCH-LM p={lm_p:.3f}  F={f_stat:.2f}"
+    except Exception as e:
+        lm_stat = lm_p = f_stat = f_p = np.nan
+        arch_detected = False
+        status, detail = "⚠ WARN", f"Test fallito: {e}"
+    return {
+        "lm_stat": lm_stat, "lm_p": lm_p,
+        "f_stat": f_stat, "f_p": f_p,
+        "arch_detected": arch_detected,
+        "status": status, "detail": detail,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Test 5 — Omoschedasticità  (Fligner-Killeen + Levene, contestualizzati con ARCH)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_homoscedasticity(series: pd.Series,
+                          shock: pd.Timestamp,
+                          arch_detected: bool = False) -> dict:
+    """
+    Confronta varianza pre vs post con due test:
+      • Fligner-Killeen — PRIMARIO: non parametrico, robusto a non-normalità
+                          e a eteroschedasticità condizionale lieve.
+      • Levene          — SECONDARIO: informativo, ma INAFFIDABILE se ARCH
+                          è presente (l'ARCH-LM lo segnala).
+
+    Usa la finestra completa (fino a HALF_WIN da ogni lato dello shock).
+
+    Se arch_detected=True: il risultato Levene viene flaggato come unreliable;
+    il verdetto primario si basa su Fligner-Killeen.
+    """
+    pre  = series[series.index < shock].tail(HALF_WIN).dropna()
+    post = series[series.index >= shock].head(HALF_WIN).dropna()
+
+    if len(pre) < 5 or len(post) < 5:
+        return {
+            "status": "⚠ WARN", "detail": f"Campioni insufficienti (pre={len(pre)}, post={len(post)})",
+            "fligner_stat": np.nan, "fligner_p": np.nan,
+            "lev_stat": np.nan, "lev_p": np.nan,
+            "std_pre": np.nan, "std_post": np.nan,
+            "ratio": np.nan, "arch_warning": arch_detected,
+        }
+
+    fligner_stat, fligner_p = stats.fligner(pre, post)
+    lev_stat,     lev_p     = stats.levene(pre, post)
+    std_pre, std_post = float(pre.std()), float(post.std())
+    ratio = std_post / std_pre if std_pre > 0 else np.nan
+
+    # Verdetto primario su Fligner-Killeen
+    fligner_het = fligner_p < ALPHA
+    status = "✗ FAIL" if fligner_het else "OK"
+
+    arch_note = ""
+    if arch_detected:
+        arch_note = " [Levene unreliable: ARCH presente → usa Fligner]"
+
+    return {
+        "fligner_stat": fligner_stat, "fligner_p": fligner_p,
+        "fligner_het": fligner_het,
+        "lev_stat": lev_stat, "lev_p": lev_p,
+        "std_pre": std_pre, "std_post": std_post, "ratio": ratio,
+        "arch_warning": arch_detected,
+        "n_pre": len(pre), "n_post": len(post),
+        "status": status,
+        "detail": (f"Fligner p={fligner_p:.3f} {'✗HET' if fligner_het else '✓'}  "
+                   f"Levene p={lev_p:.3f}  "
+                   f"σ_pre={std_pre:.4f}  σ_post={std_post:.4f}  ratio={ratio:.2f}×"
+                   f"{arch_note}"),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Orchestratore: esegue tutti i test nell'ordine corretto
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_diagnostics(series: pd.Series, shock: pd.Timestamp, label: str) -> dict:
+    """
+    Esegue i 5 test nell'ordine di dipendenza corretto:
+      1. fit_ar_model (ARCH e autocorrelazione condividono i residui)
+      2. test_autocorrelation
+      3. test_arch (sui residui AR)
+      4. test_normality (sui residui AR)
+      5. test_homoscedasticity (ARCH informa il verdetto)
+      6. test_stationarity (indipendente, sulla serie grezza)
+    """
+    s = series.dropna()
+    print(f"  [{label.upper()}]  n={len(s)}")
+
+    # Step 1+2: Autocorrelazione → produce AR residuals
+    ac_res = test_autocorrelation(s)
+    ar_residuals = ac_res["residuals"]
+
+    # Step 3: ARCH sui residui AR
+    arch_res = test_arch(ar_residuals)
+
+    # Step 4: Normalità sui residui AR
+    norm_res = test_normality(ar_residuals)
+
+    # Step 5: Omoschedasticità, informata dall'ARCH
+    homo_res = test_homoscedasticity(s, shock, arch_detected=arch_res["arch_detected"])
+
+    # Step 6: Stazionarietà (sulla serie grezza, livelli)
+    stat_res = test_stationarity(s)
+
+    results = {
+        "stationarity":    stat_res,
+        "autocorrelation": ac_res,
+        "normality":       norm_res,
+        "homoscedasticity":homo_res,
+        "arch":            arch_res,
+    }
+
+    for name, res in results.items():
+        icon = {"OK": "✓", "⚠ WARN": "⚠", "✗ FAIL": "✗",
+                "✗ FAIL (volatility clustering)": "✗"}.get(res["status"], "?")
+        print(f"    {icon} {name:<18}  {res['status']:<35}  {res['detail']}")
+    return results
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# H₀ — Test per singola cella (evento × carburante)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _cliff_delta_interp(d: float) -> str:
+    a = abs(d)
+    if   a < 0.147: return "negligible"
+    elif a < 0.330: return "small"
+    elif a < 0.474: return "medium"
+    else:           return "large"
+
+
+def test_h0_speculative(
+    full_margin: pd.Series,
+    shock: pd.Timestamp,
+    pre_days: int = H0_PRE_DAYS,
+    post_days: int = H0_POST_DAYS,
+) -> dict:
+    """
+    Test H₀: il margine post-shock non supera il margine pre-shock.
+
+    Usa la SERIE COMPLETA (non la finestra di diagnostica) per avere
+    il numero di osservazioni pre/post più ampio possibile.
+
+    Test: Mann-Whitney U one-sided
+      H₀: F(post) ≤ F(pre)   [i.e. post non stocasticamente dominante su pre]
+      H₁: F(post) > F(pre)   [profitto anomalo — speculazione]
+    Effect size: Cliff's δ = (U/(n₁·n₂))·2 − 1  ∈ [−1, 1]
+      δ > 0 → la distribuzione post tende a valori più alti di pre
+      δ > 0.474 → effetto "large" (soglia Cohen)
+    """
+    s = full_margin.dropna()
+    pre_start = shock - pd.Timedelta(days=pre_days)
+    post_end  = shock + pd.Timedelta(days=post_days)
+
+    pre  = s[(s.index >= pre_start) & (s.index < shock)]
+    post = s[(s.index >= shock) & (s.index <= post_end)]
+
+    if len(pre) < 10 or len(post) < 10:
+        return {
+            "status": "insufficient_data",
+            "n_pre": len(pre), "n_post": len(post),
+            "mw_p_onesided": np.nan, "cliff_delta": np.nan,
+            "reject_h0": False,
+            "mean_pre": np.nan, "mean_post": np.nan, "delta_mean": np.nan,
+            "detail": f"Dati insufficienti: n_pre={len(pre)}, n_post={len(post)} (min 10)",
+        }
+
+    # One-sided: H₁ post > pre
+    u_stat, mw_p = stats.mannwhitneyu(post, pre, alternative="greater")
+    # Two-sided per confronto
+    _, mw_p2 = stats.mannwhitneyu(post, pre, alternative="two-sided")
+
+    # Cliff's delta: (2U / n1*n2) - 1  (dove U da H₁: post > pre)
+    n1, n2 = len(post), len(pre)
+    cliff_d = (2.0 * float(u_stat) / (n1 * n2)) - 1.0
+    cliff_interp = _cliff_delta_interp(cliff_d)
+
+    mean_pre  = float(pre.mean())
+    mean_post = float(post.mean())
+    delta_mean = mean_post - mean_pre
+
+    reject_h0 = (mw_p < ALPHA) and (cliff_d > 0)
+    status = "RIFIUTO H₀" if reject_h0 else "NON RIFIUTO H₀"
+
+    return {
+        "status": status,
+        "n_pre": n1, "n_post": n2,
+        "mean_pre": mean_pre, "mean_post": mean_post, "delta_mean": delta_mean,
+        "u_stat": float(u_stat),
+        "mw_p_onesided": mw_p, "mw_p_twosided": mw_p2,
+        "cliff_delta": cliff_d, "cliff_interp": cliff_interp,
+        "reject_h0": reject_h0,
+        "detail": (f"Δmean={delta_mean:+.4f} €/L | "
+                   f"MW p(one-sided)={mw_p:.3f} | "
+                   f"Cliff δ={cliff_d:.3f} [{cliff_interp}] | "
+                   f"{status}"),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# H₀ — Sintesi per evento, carburante, globale  (Fisher combination)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _fisher_combine(p_values: list[float]) -> tuple[float, float]:
+    """
+    Fisher's method: χ² = −2·Σln(pᵢ), df = 2k.
+    Restituisce (chi2_stat, p_combined).
+    Filtra automaticamente NaN e p = 0 (sostituisce con 1e-15).
+    """
+    ps = [max(float(p), 1e-15) for p in p_values if not np.isnan(p)]
+    if not ps:
+        return np.nan, np.nan
+    chi2 = -2.0 * sum(np.log(ps))
+    df   = 2 * len(ps)
+    p_comb = 1.0 - chi2_dist.cdf(chi2, df=df)
+    return chi2, p_comb
+
+
+def synthesize_h0(h0_grid: dict) -> dict:
+    """
+    h0_grid: {ev_name: {fuel_key: risultato_test_h0}}
+
+    Produce tre livelli di sintesi con Fisher combination:
+      • per_evento[ev_name]    — combina benzina + gasolio per quell'evento
+      • per_carburante[fuel]   — combina i 3 eventi per quel carburante
+      • globale                — combina tutte le celle disponibili
+    """
+    ev_names   = list(EVENTS.keys())
+    fuel_names = list(FUELS.keys())
+
+    per_evento: dict = {}
+    for ev in ev_names:
+        ps = [h0_grid.get(ev, {}).get(f, {}).get("mw_p_onesided", np.nan)
+              for f in fuel_names]
+        ps_valid = [p for p in ps if not np.isnan(p)]
+        chi2, p_c = _fisher_combine(ps_valid) if ps_valid else (np.nan, np.nan)
+        per_evento[ev] = {
+            "chi2": chi2, "p_combined": p_c,
+            "k": len(ps_valid),
+            "reject_h0": (p_c < ALPHA) if not np.isnan(p_c) else False,
+        }
+
+    per_carburante: dict = {}
+    for fuel in fuel_names:
+        ps = [h0_grid.get(ev, {}).get(fuel, {}).get("mw_p_onesided", np.nan)
+              for ev in ev_names]
+        ps_valid = [p for p in ps if not np.isnan(p)]
+        chi2, p_c = _fisher_combine(ps_valid) if ps_valid else (np.nan, np.nan)
+        per_carburante[fuel] = {
+            "chi2": chi2, "p_combined": p_c,
+            "k": len(ps_valid),
+            "reject_h0": (p_c < ALPHA) if not np.isnan(p_c) else False,
+        }
+
+    # Globale
+    all_ps = [h0_grid.get(ev, {}).get(f, {}).get("mw_p_onesided", np.nan)
+              for ev in ev_names for f in fuel_names]
+    all_valid = [p for p in all_ps if not np.isnan(p)]
+    g_chi2, g_p = _fisher_combine(all_valid) if all_valid else (np.nan, np.nan)
+    globale = {
+        "chi2": g_chi2, "p_combined": g_p,
+        "k": len(all_valid),
+        "reject_h0": (g_p < ALPHA) if not np.isnan(g_p) else False,
+    }
+
+    return {"per_evento": per_evento, "per_carburante": per_carburante, "globale": globale}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Plot — Serie storica margine
+# ══════════════════════════════════════════════════════════════════════════════
+
+def plot_margin_series(margin: pd.DataFrame) -> plt.Figure:
+    fig, axes = plt.subplots(2, 1, figsize=(13, 7), sharex=True)
+    fig.suptitle("Margine industriale+distribuzione+retailer (€/L)\n"
+                 "= Prezzo netto ex-tasse  −  Wholesale futures convertiti",
+                 fontsize=12, fontweight="bold")
+    configs = [
+        ("margin_gasolio", "#1D3557", "Gasolio  (netto SISEN − Gas Oil futures €/L)", "Gasolio"),
+        ("margin_benzina", "#E63946", "Benzina  (netto SISEN − Eurobob B7H1 futures €/L)", "Benzina"),
+    ]
+    for ax, (col, color, desc, title) in zip(axes, configs):
+        s = margin[col].dropna()
+        if s.empty:
+            ax.text(0.5, 0.5, "Dati non disponibili", ha="center", va="center",
+                    transform=ax.transAxes, fontsize=12, color="grey")
+        else:
+            ax.fill_between(s.index, s.values, alpha=0.15, color=color)
+            ax.plot(s.index, s.values, color=color, lw=1.0, label=desc)
+            ax.axhline(s.mean(), color=color, lw=1, ls=":", alpha=0.8,
+                       label=f"media = {s.mean():.3f} €/L")
+            ax.axhline(0, color="black", lw=0.6)
+            for ev_name, ev in EVENTS.items():
+                if ev["shock"] >= s.index.min() and ev["shock"] <= s.index.max():
+                    ax.axvline(ev["shock"], color=ev["color"], lw=1.5, ls="--", alpha=0.8)
+                    ax.text(ev["shock"], s.max(),
+                            f" {ev['shock'].strftime('%b %Y')}",
+                            color=ev["color"], fontsize=7, va="top")
+        ax.set_ylabel("€/L", fontsize=9)
+        ax.set_title(title, fontsize=10, fontweight="bold")
+        ax.legend(fontsize=8, loc="upper left")
         ax.grid(axis="y", alpha=0.2)
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
-        plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=8)
+        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    axes[-1].xaxis.set_major_locator(mdates.YearLocator())
+    fig.tight_layout()
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Plot — Grafici diagnostici (uno per test × evento × fuel)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _badge(ax, status: str) -> None:
+    _COLORS = {"OK": _OK, "⚠ WARN": _WARN, "✗ FAIL": _FAIL,
+               "✗ FAIL (volatility clustering)": _FAIL}
+    col   = _COLORS.get(status, "#aaa")
+    label = status if status.startswith(("✓","⚠","✗")) else status
+    ax.text(0.98, 0.97, label, transform=ax.transAxes,
+            ha="right", va="top", fontsize=10, fontweight="bold", color="white",
+            bbox=dict(boxstyle="round,pad=0.35", facecolor=col, edgecolor="none"), zorder=10)
+
+
+def _base_title(ev: dict, fuel_key: str, test_label: str) -> str:
+    return f"{test_label}  —  {ev['label']}  ·  {fuel_key.capitalize()}  [margine]"
+
+
+def plot_one_stationarity(win, ev, fuel_key, fcolor, res):
+    fig, ax = plt.subplots(figsize=(9, 4))
+    shock = ev["shock"]
+    ax.fill_between(win.index, win.values, alpha=0.15, color=fcolor)
+    ax.plot(win.index, win.values, color=fcolor, lw=1.2)
+    ax.axhline(0, color="black", lw=0.6)
+    ax.axvline(shock, color=ev["color"], lw=2, ls="--")
+    ax.axvspan(win.index.min(), shock, alpha=0.04, color="steelblue")
+    ax.axvspan(shock, win.index.max(), alpha=0.04, color="tomato")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax.set_ylabel("Margine (€/L)", fontsize=10)
+    ax.grid(axis="y", alpha=0.25)
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    adf_ok  = "✓" if res["adf_p"]  < ALPHA else "✗"
+    kpss_ok = "✓" if res["kpss_p"] > ALPHA else "✗"
+    pnote = res.get("power_note", "")
+    ax.text(0.02, 0.05,
+            f"ADF   p = {res['adf_p']:.3f}  {adf_ok}   (rif. H₀ = staz.)\n"
+            f"KPSS  p = {res['kpss_p']:.3f}  {kpss_ok}   (non rif. H₀ = staz.)\n"
+            f"n = {res['n']}{pnote}",
+            transform=ax.transAxes, fontsize=8.5, va="bottom", family="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))
+    ax.set_title(_base_title(ev, fuel_key, "Stazionarietà — ADF + KPSS"), fontsize=11, fontweight="bold")
+    _badge(ax, res["status"])
+    fig.tight_layout()
+    return fig
+
+
+def plot_one_autocorrelation(win, ev, fuel_key, fcolor, res):
+    from statsmodels.graphics.tsaplots import plot_acf
+    residuals = res.get("residuals", win.diff().dropna().values)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+    # Panel 1: ACF della serie grezza
+    try:
+        from statsmodels.graphics.tsaplots import plot_acf as _pacf
+        plot_acf(win.dropna(), lags=25, ax=axes[0], color="grey", alpha=0.05,
+                 zero=False, title="")
+        axes[0].set_title("ACF serie grezza (solo visivo)", fontsize=9)
+    except Exception:
+        axes[0].text(0.5, 0.5, "n.d.", ha="center", va="center", transform=axes[0].transAxes)
+
+    # Panel 2: ACF residui AR — quello che conta
+    try:
+        plot_acf(residuals, lags=min(25, len(residuals)//2 - 1), ax=axes[1],
+                 color=fcolor, alpha=0.05, zero=False, title="")
+        axes[1].set_title(f"ACF residui AR({res['ar_order']}) — Ljung-Box applicato qui",
+                          fontsize=9, fontweight="bold")
+    except Exception:
+        axes[1].text(0.5, 0.5, "n.d.", ha="center", va="center", transform=axes[1].transAxes)
+
+    for ax in axes:
+        ax.set_xlabel("Lag (giorni)", fontsize=9)
+        ax.set_ylabel("ACF", fontsize=9)
+        ax.grid(axis="y", alpha=0.25)
+        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+
+    lb_vals = list(res["lb"].values())
+    fallback = " [FALLBACK: diff. prime]" if res.get("fallback") else ""
+    axes[1].text(0.02, 0.05,
+                 f"φ AR(1) = {res['phi_ar1']:.3f}  n_eff={res['n_eff']}/{res['n']}\n"
+                 f"AR({res['ar_order']}) AIC={res['aic']:.1f if not np.isnan(res['aic']) else 'n.d.'}\n"
+                 f"LB p (lag 5/10/20) = {lb_vals[0]}  {lb_vals[1]}  {lb_vals[2]}{fallback}",
+                 transform=axes[1].transAxes, fontsize=8.5, va="bottom", family="monospace",
+                 bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))
+
+    fig.suptitle(_base_title(ev, fuel_key, "Autocorrelazione — AR(p) → Ljung-Box sui residui"),
+                 fontsize=11, fontweight="bold")
+    _badge(axes[1], res["status"])
+    fig.tight_layout()
+    return fig
+
+
+def plot_one_normality(win, ev, fuel_key, fcolor, res):
+    residuals_key = "residuals"  # from autocorrelation result
+    ar_residuals = res.get("_ar_residuals", win.diff().dropna().values)
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+
+    # QQ plot
+    ax = axes[0]
+    data = ar_residuals[np.isfinite(ar_residuals)]
+    (osm, osr), (slope, intercept, _) = stats.probplot(data, dist="norm")
+    n  = len(data)
+    pi = stats.norm.cdf(osm)
+    phi_i = np.where(stats.norm.pdf(osm) < 1e-10, 1e-10, stats.norm.pdf(osm))
+    se = np.sqrt(pi * (1 - pi) / n) / phi_i
+    ci_lo = slope * osm + intercept - 1.96 * abs(slope) * se
+    ci_hi = slope * osm + intercept + 1.96 * abs(slope) * se
+    ax.fill_between(osm, ci_lo, ci_hi, color="red", alpha=0.12, label="IC 95%")
+    ax.scatter(osm, osr, s=10, color=fcolor, alpha=0.65, rasterized=True, zorder=3)
+    xlim = np.array([min(osm), max(osm)])
+    ax.plot(xlim, slope * xlim + intercept, color="red", lw=1.5, ls="--")
+    ax.set_xlabel("Quantili N(0,1)", fontsize=9)
+    ax.set_ylabel("Quantili residui AR", fontsize=9)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.25)
+    ax.set_title("QQ plot  (residui AR)", fontsize=10)
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+
+    # Istogramma residui + curva normale teorica
+    ax2 = axes[1]
+    ax2.hist(data, bins=min(30, n//3 + 1), density=True, color=fcolor, alpha=0.5, label="residui AR")
+    xg = np.linspace(data.min(), data.max(), 200)
+    ax2.plot(xg, stats.norm.pdf(xg, data.mean(), data.std()), "r--", lw=1.5, label="N(μ,σ)")
+    ax2.set_xlabel("Residuo AR", fontsize=9)
+    ax2.set_ylabel("Densità", fontsize=9)
+    ax2.legend(fontsize=8)
+    ax2.grid(alpha=0.25)
+    ax2.set_title("Istogramma residui AR", fontsize=10)
+    ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False)
+
+    sw_str = f"SW    p = {res['sw_p']:.3f}" if not np.isnan(res.get("sw_p", np.nan)) else f"SW    {res.get('sw_note','n.d.')}"
+    ax.text(0.02, 0.97,
+            f"JB    p = {res['jb_p']:.3f}  {'✓' if res['jb_ok'] else '✗'}\n"
+            f"D'Ag  p = {res['dag_p']:.3f}  {'✓' if res['dag_ok'] else '✗'}\n"
+            f"{sw_str}\n"
+            f"skew={res['skewness']:.2f}  kurt_exc={res['kurt_excess']:.2f}",
+            transform=ax.transAxes, fontsize=8.5, va="top", family="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))
+
+    fig.suptitle(_base_title(ev, fuel_key, "Normalità residui AR — JB + D'Agostino K²"), fontsize=11, fontweight="bold")
+    _badge(axes[0], res["status"])
+    fig.tight_layout()
+    return fig
+
+
+def plot_one_homoscedasticity(win, ev, fuel_key, fcolor, res):
+    fig, ax = plt.subplots(figsize=(9, 4))
+    shock = ev["shock"]
+    roll_std = win.rolling(14, min_periods=7).std()
+    ax.fill_between(roll_std.index, roll_std.values, alpha=0.2, color=fcolor)
+    ax.plot(roll_std.index, roll_std.values, color=fcolor, lw=1.5)
+    ax.axvline(shock, color=ev["color"], lw=2, ls="--")
+    pre_idx  = win.index[win.index < shock]
+    post_idx = win.index[win.index >= shock]
+    if len(pre_idx) and len(post_idx) and not np.isnan(res["std_pre"]):
+        ax.hlines(res["std_pre"],  pre_idx.min(), pre_idx.max(),
+                  colors="steelblue", lw=1.5, ls=":", label=f"σ pre = {res['std_pre']:.4f}")
+        ax.hlines(res["std_post"], post_idx.min(), post_idx.max(),
+                  colors="tomato",   lw=1.5, ls=":", label=f"σ post = {res['std_post']:.4f}")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax.set_ylabel("σ rolling 14gg  (€/L)", fontsize=10)
+    ax.legend(fontsize=9, loc="upper left")
+    ax.grid(axis="y", alpha=0.25)
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    arch_note = "⚠ Levene unreliable (ARCH)" if res.get("arch_warning") else ""
+    ax.text(0.98, 0.05,
+            f"Fligner-Killeen  p = {res['fligner_p']:.3f}  [PRIMARIO]\n"
+            f"Levene           p = {res['lev_p']:.3f}  {arch_note}\n"
+            f"ratio σ post/pre = {res.get('ratio', float('nan')):.2f}×",
+            transform=ax.transAxes, fontsize=8.5, va="bottom", ha="right", family="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))
+    ax.set_title(_base_title(ev, fuel_key, "Omoschedasticità — Fligner-Killeen (primario) + Levene"), fontsize=11, fontweight="bold")
+    _badge(ax, res["status"])
+    fig.tight_layout()
+    return fig
+
+
+def plot_one_arch(win, ev, fuel_key, fcolor, res):
+    fig, ax = plt.subplots(figsize=(9, 4))
+    shock = ev["shock"]
+    diff2 = win.diff().dropna() ** 2
+    ax.fill_between(diff2.index, diff2.values, alpha=0.35, color=fcolor)
+    ax.plot(diff2.index, diff2.values, color=fcolor, lw=0.8)
+    ax.axvline(shock, color=ev["color"], lw=2, ls="--")
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
+    ax.set_ylabel("(Δmargine)²  [proxy varianza]", fontsize=10)
+    ax.grid(axis="y", alpha=0.25)
+    ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+    ax.text(0.02, 0.97,
+            f"ARCH-LM  p = {res['lm_p']:.3f}\n"
+            f"F-stat     = {res['f_stat']:.2f}\n"
+            f"Applicato ai RESIDUI AR (non alla serie grezza)",
+            transform=ax.transAxes, fontsize=8.5, va="top", family="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))
+    ax.set_title(_base_title(ev, fuel_key, "Effetti ARCH — residui AR(p)"), fontsize=11, fontweight="bold")
+    _badge(ax, res["status"])
+    fig.tight_layout()
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Plot H₀ — Matrice verdetto (evento × carburante)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def plot_h0_verdict_matrix(h0_grid: dict, synthesis: dict) -> plt.Figure:
+    """
+    Heatmap evento × carburante con colore = rifiuto/non rifiuto H₀.
+    Annotazioni: Cliff's δ, p-value one-sided.
+    Riga/colonna marginale: Fisher combination.
+    """
+    ev_names   = list(EVENTS.keys())
+    fuel_names = list(FUELS.keys())
+    ev_labels  = [EVENTS[e]["label"].replace("\n", " ") for e in ev_names]
+
+    n_ev   = len(ev_names)
+    n_fuel = len(fuel_names)
+
+    # Costruisci matrici numeriche per la heatmap
+    p_matrix     = np.full((n_ev, n_fuel), np.nan)
+    cliff_matrix = np.full((n_ev, n_fuel), np.nan)
+    reject_matrix= np.zeros((n_ev, n_fuel), dtype=bool)
+
+    for i, ev in enumerate(ev_names):
+        for j, fuel in enumerate(fuel_names):
+            cell = h0_grid.get(ev, {}).get(fuel, {})
+            if cell.get("status") != "insufficient_data":
+                p_matrix[i, j]      = cell.get("mw_p_onesided", np.nan)
+                cliff_matrix[i, j]  = cell.get("cliff_delta", np.nan)
+                reject_matrix[i, j] = cell.get("reject_h0", False)
+
+    # Figura con extra colonna/riga per sintesi Fisher
+    fig, ax = plt.subplots(figsize=(max(8, n_fuel * 2.5 + 3), n_ev * 1.8 + 2.5))
+    ax.set_xlim(-0.5, n_fuel + 0.5)
+    ax.set_ylim(-0.5, n_ev + 0.5)
+    ax.set_aspect("equal")
+    ax.invert_yaxis()
+
+    # Celle per cella
+    for i, ev in enumerate(ev_names):
+        for j, fuel in enumerate(fuel_names):
+            cell = h0_grid.get(ev, {}).get(fuel, {})
+            if cell.get("status") == "insufficient_data":
+                color = "#eeeeee"
+                txt   = "n.d."
+            else:
+                reject = cell.get("reject_h0", False)
+                color  = "#e74c3c" if reject else "#2ecc71"
+                p      = cell.get("mw_p_onesided", np.nan)
+                d      = cell.get("cliff_delta", np.nan)
+                dm     = cell.get("delta_mean", np.nan)
+                interp = cell.get("cliff_interp", "")
+                verdict = "RIFIUTO H₀\n(profitto anomalo)" if reject else "NON RIFIUTO H₀"
+                txt = (f"{verdict}\n"
+                       f"Δmean={dm:+.4f} €/L\n"
+                       f"p(one)={p:.3f}  δ={d:.3f}\n"
+                       f"[{interp}]")
+
+            rect = plt.Rectangle((j - 0.45, i - 0.45), 0.9, 0.9,
+                                  facecolor=color, edgecolor="white", lw=2)
+            ax.add_patch(rect)
+            ax.text(j, i, txt, ha="center", va="center", fontsize=7.5,
+                    color="white" if cell.get("reject_h0") else "black", fontweight="bold")
+
+    # Riga sintesi Fisher per-evento
+    for i, ev in enumerate(ev_names):
+        s = synthesis["per_evento"].get(ev, {})
+        p_c = s.get("p_combined", np.nan)
+        rej = s.get("reject_h0", False)
+        color = "#c0392b" if rej else "#27ae60"
+        rect = plt.Rectangle((n_fuel - 0.45, i - 0.45), 0.9, 0.9,
+                              facecolor=color, edgecolor="white", lw=2, alpha=0.7)
+        ax.add_patch(rect)
+        verdict = "RIFIUTO H₀" if rej else "NON RIFIUTO H₀"
+        txt = f"Fisher\n{verdict}\np={p_c:.3f}" if not np.isnan(p_c) else "Fisher\nn.d."
+        ax.text(n_fuel, i, txt, ha="center", va="center", fontsize=7, color="white", fontweight="bold")
+
+    # Colonna sintesi Fisher per-carburante
+    for j, fuel in enumerate(fuel_names):
+        s = synthesis["per_carburante"].get(fuel, {})
+        p_c = s.get("p_combined", np.nan)
+        rej = s.get("reject_h0", False)
+        color = "#c0392b" if rej else "#27ae60"
+        rect = plt.Rectangle((j - 0.45, n_ev - 0.45), 0.9, 0.9,
+                              facecolor=color, edgecolor="white", lw=2, alpha=0.7)
+        ax.add_patch(rect)
+        verdict = "RIFIUTO H₀" if rej else "NON RIFIUTO H₀"
+        txt = f"Fisher\n{verdict}\np={p_c:.3f}" if not np.isnan(p_c) else "Fisher\nn.d."
+        ax.text(j, n_ev, txt, ha="center", va="center", fontsize=7, color="white", fontweight="bold")
+
+    # Cella globale
+    sg = synthesis["globale"]
+    p_g = sg.get("p_combined", np.nan)
+    rej_g = sg.get("reject_h0", False)
+    color_g = "#922b21" if rej_g else "#1e8449"
+    rect = plt.Rectangle((n_fuel - 0.45, n_ev - 0.45), 0.9, 0.9,
+                          facecolor=color_g, edgecolor="white", lw=2)
+    ax.add_patch(rect)
+    txt_g = f"GLOBALE\n{'RIFIUTO' if rej_g else 'NON RIF.'} H₀\np={p_g:.3f}" if not np.isnan(p_g) else "GLOBALE\nn.d."
+    ax.text(n_fuel, n_ev, txt_g, ha="center", va="center", fontsize=7, color="white", fontweight="bold")
+
+    # Etichette assi
+    ax.set_xticks(range(n_fuel + 1))
+    ax.set_xticklabels([f.capitalize() for f in fuel_names] + ["SINTESI\nFisher"], fontsize=9)
+    ax.set_yticks(range(n_ev + 1))
+    ax.set_yticklabels(ev_labels + ["SINTESI\nFisher"], fontsize=8.5)
+
+    ax.set_title(
+        "Verdetto H₀: i distributori italiani generano profitti anomali\n"
+        "in prossimità di shock geopolitici?\n"
+        "Test: Mann-Whitney U one-sided (H₁: margine_post > margine_pre) + Fisher combination",
+        fontsize=11, fontweight="bold", pad=15,
+    )
+
+    # Legenda
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor="#e74c3c", label="RIFIUTO H₀ — profitto anomalo rilevato"),
+        Patch(facecolor="#2ecc71", label="NON RIFIUTO H₀ — margine coerente"),
+        Patch(facecolor="#eeeeee", label="Dati insufficienti"),
+    ]
+    ax.legend(handles=legend_elements, loc="lower center",
+              bbox_to_anchor=(0.5, -0.12), ncol=3, fontsize=8)
+
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_visible(False)
+    ax.spines["bottom"].set_visible(False)
+    ax.tick_params(left=False, bottom=False)
+    fig.tight_layout()
+    return fig
+
+
+def plot_h0_distributions(full_margin: pd.DataFrame, h0_grid: dict) -> plt.Figure:
+    """
+    Violin plot dei margini pre e post shock per ogni (evento × carburante).
+    Mostra visivamente l'entità e la direzione degli shift.
+    """
+    fuel_cols  = {"benzina": "margin_benzina", "gasolio": "margin_gasolio"}
+    fuel_colors = {"benzina": "#E63946", "gasolio": "#1D3557"}
+    ev_names   = list(EVENTS.keys())
+    fuel_names = list(FUELS.keys())
+
+    n_ev   = len(ev_names)
+    n_fuel = len(fuel_names)
+    fig, axes = plt.subplots(n_ev, n_fuel,
+                             figsize=(4.5 * n_fuel, 3.5 * n_ev),
+                             squeeze=False)
+    fig.suptitle(
+        "H₀ — Distribuzione margine pre vs post shock\n"
+        "(pre = 60gg, post = 45gg dalla data shock)",
+        fontsize=12, fontweight="bold",
+    )
+
+    for i, ev_name in enumerate(ev_names):
+        ev = EVENTS[ev_name]
+        shock = ev["shock"]
+        for j, fuel_key in enumerate(fuel_names):
+            ax = axes[i][j]
+            col = fuel_cols[fuel_key]
+            fcolor = fuel_colors[fuel_key]
+            s = full_margin[col].dropna()
+
+            pre  = s[(s.index >= shock - pd.Timedelta(days=H0_PRE_DAYS)) & (s.index < shock)]
+            post = s[(s.index >= shock) & (s.index <= shock + pd.Timedelta(days=H0_POST_DAYS))]
+
+            if len(pre) < 5 or len(post) < 5:
+                ax.text(0.5, 0.5, "Dati n.d.", ha="center", va="center",
+                        transform=ax.transAxes, color="grey")
+                ax.set_title(f"{fuel_key} — {ev['label'].replace(chr(10),' ')}", fontsize=8)
+                continue
+
+            data_plot = [pre.values, post.values]
+            parts = ax.violinplot(data_plot, positions=[0, 1],
+                                  showmedians=True, showextrema=True)
+            for pc in parts["bodies"]:
+                pc.set_facecolor(fcolor)
+                pc.set_alpha(0.5)
+            for part in ("cmedians", "cbars", "cmins", "cmaxes"):
+                if part in parts:
+                    parts[part].set_edgecolor(fcolor)
+
+            # Aggiungi punti gitter
+            for k, d in enumerate([pre.values, post.values]):
+                jitter = np.random.default_rng(42).uniform(-0.05, 0.05, len(d))
+                ax.scatter(jitter + k, d, s=8, color=fcolor, alpha=0.4, zorder=3)
+
+            cell = h0_grid.get(ev_name, {}).get(fuel_key, {})
+            p_v  = cell.get("mw_p_onesided", np.nan)
+            cliff = cell.get("cliff_delta", np.nan)
+            verdict = cell.get("status", "n.d.")
+            vcolor  = "#e74c3c" if cell.get("reject_h0") else "#27ae60"
+
+            ax.set_xticks([0, 1])
+            ax.set_xticklabels([f"Pre\n(n={len(pre)})", f"Post\n(n={len(post)})"], fontsize=8)
+            ax.set_ylabel("Margine (€/L)", fontsize=8)
+            ax.grid(axis="y", alpha=0.2)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+            ax.set_title(
+                f"{fuel_key.capitalize()} — {ev['label'].replace(chr(10),' ')}",
+                fontsize=8.5, fontweight="bold",
+            )
+            ax.text(0.5, 0.98,
+                    f"p={p_v:.3f}  δ={cliff:.3f}\n{verdict}",
+                    transform=ax.transAxes, ha="center", va="top", fontsize=8,
+                    color="white", fontweight="bold",
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor=vcolor, edgecolor="none"))
 
     fig.tight_layout()
-    out = out_dir / "00_margine_serie_storica_globale.png"
-    fig.savefig(out, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  → Salvato: {out}")
+    return fig
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Export CSV
+# ══════════════════════════════════════════════════════════════════════════════
+
+def export_diagnostic_csv(all_results: dict) -> None:
+    """Esporta CSV diagnostici (stazionarietà, autocorrelazione, …)."""
+    rows_summary = []
+    rows = {k: [] for k in ("stationarity","autocorrelation","normality","homoscedasticity","arch")}
+
+    for ev_name, ev in EVENTS.items():
+        for fuel_key, res_all in all_results.get(ev_name, {}).items():
+            base = {"evento": ev_name, "shock": ev["shock"].date(), "carburante": fuel_key}
+
+            for test_it, test_key in [
+                ("Stazionarietà",     "stationarity"),
+                ("Autocorrelazione",  "autocorrelation"),
+                ("Normalità",         "normality"),
+                ("Omoschedasticità",  "homoscedasticity"),
+                ("Effetti ARCH",      "arch"),
+            ]:
+                res = res_all[test_key]
+                rows_summary.append({**base, "test": test_it,
+                                     "status": res["status"], "dettaglio": res["detail"]})
+
+            r = res_all["stationarity"]
+            rows["stationarity"].append({**base, "status": r["status"],
+                "adf_p": round(r["adf_p"],4), "adf_ok": r["adf_ok"],
+                "kpss_stat": round(r["kpss_stat"],4), "kpss_p": round(r["kpss_p"],4),
+                "kpss_ok": r["kpss_ok"], "n": r["n"]})
+
+            r = res_all["autocorrelation"]
+            rows["autocorrelation"].append({**base, "status": r["status"],
+                "ar_order": r["ar_order"], "aic": round(r["aic"],2) if not np.isnan(r["aic"]) else "",
+                "phi_ar1": round(r["phi_ar1"],4), "n": r["n"], "n_eff": r["n_eff"],
+                **{f"lb_p_lag{k}": v for k,v in r["lb"].items()},
+                "lb_fail": r["lb_fail"], "fallback": r["fallback"]})
+
+            r = res_all["normality"]
+            rows["normality"].append({**base, "status": r["status"],
+                "jb_stat": round(r["jb_stat"],4), "jb_p": round(r["jb_p"],4), "jb_ok": r["jb_ok"],
+                "dag_stat": round(r["dag_stat"],4), "dag_p": round(r["dag_p"],4), "dag_ok": r["dag_ok"],
+                "sw_stat": round(r["sw_stat"],4) if not np.isnan(r.get("sw_stat",np.nan)) else "",
+                "sw_p": round(r["sw_p"],4) if not np.isnan(r.get("sw_p",np.nan)) else "",
+                "skewness": round(r["skewness"],4), "kurtosis_excess": round(r["kurt_excess"],4),
+                "n_residuals": r["n_residuals"]})
+
+            r = res_all["homoscedasticity"]
+            rows["homoscedasticity"].append({**base, "status": r["status"],
+                "fligner_stat": round(r["fligner_stat"],4) if not np.isnan(r["fligner_stat"]) else "",
+                "fligner_p": round(r["fligner_p"],4) if not np.isnan(r["fligner_p"]) else "",
+                "fligner_het": r.get("fligner_het",""),
+                "lev_stat": round(r["lev_stat"],4) if not np.isnan(r["lev_stat"]) else "",
+                "lev_p": round(r["lev_p"],4) if not np.isnan(r["lev_p"]) else "",
+                "sigma_pre": round(r["std_pre"],6) if not np.isnan(r["std_pre"]) else "",
+                "sigma_post": round(r["std_post"],6) if not np.isnan(r["std_post"]) else "",
+                "ratio_post_pre": round(r.get("ratio",np.nan),3) if not np.isnan(r.get("ratio",np.nan)) else "",
+                "arch_warning": r["arch_warning"]})
+
+            r = res_all["arch"]
+            rows["arch"].append({**base, "status": r["status"],
+                "lm_stat": round(r["lm_stat"],4) if not np.isnan(r["lm_stat"]) else "",
+                "lm_p": round(r["lm_p"],4) if not np.isnan(r["lm_p"]) else "",
+                "f_stat": round(r["f_stat"],4) if not np.isnan(r["f_stat"]) else "",
+                "arch_detected": r["arch_detected"]})
+
+    pd.DataFrame(rows_summary).to_csv(OUT_DIR / "risultati_riepilogo.csv", index=False, encoding="utf-8-sig")
+    print("  CSV: risultati_riepilogo.csv")
+    for key, fname in [
+        ("stationarity",     "risultati_stazionarieta.csv"),
+        ("autocorrelation",  "risultati_autocorrelazione.csv"),
+        ("normality",        "risultati_normalita.csv"),
+        ("homoscedasticity", "risultati_omoschedasticita.csv"),
+        ("arch",             "risultati_arch.csv"),
+    ]:
+        pd.DataFrame(rows[key]).to_csv(OUT_DIR / fname, index=False, encoding="utf-8-sig")
+        print(f"  CSV: {fname}")
+
+
+def export_h0_csv(h0_grid: dict, synthesis: dict) -> None:
+    """Esporta CSV per H₀ — per cella e sintesi Fisher."""
+    ev_names   = list(EVENTS.keys())
+    fuel_names = list(FUELS.keys())
+
+    # Per cella
+    rows_cell = []
+    for ev in ev_names:
+        for fuel in fuel_names:
+            cell = h0_grid.get(ev, {}).get(fuel, {})
+            rows_cell.append({
+                "evento": ev,
+                "shock": EVENTS[ev]["shock"].date(),
+                "carburante": fuel,
+                "n_pre": cell.get("n_pre", ""),
+                "n_post": cell.get("n_post", ""),
+                "mean_pre": round(cell.get("mean_pre", np.nan), 5) if not np.isnan(cell.get("mean_pre", np.nan)) else "",
+                "mean_post": round(cell.get("mean_post", np.nan), 5) if not np.isnan(cell.get("mean_post", np.nan)) else "",
+                "delta_mean": round(cell.get("delta_mean", np.nan), 5) if not np.isnan(cell.get("delta_mean", np.nan)) else "",
+                "mw_p_onesided": round(cell.get("mw_p_onesided", np.nan), 4) if not np.isnan(cell.get("mw_p_onesided", np.nan)) else "",
+                "mw_p_twosided": round(cell.get("mw_p_twosided", np.nan), 4) if not np.isnan(cell.get("mw_p_twosided", np.nan)) else "",
+                "cliff_delta": round(cell.get("cliff_delta", np.nan), 4) if not np.isnan(cell.get("cliff_delta", np.nan)) else "",
+                "cliff_interp": cell.get("cliff_interp", ""),
+                "reject_h0": cell.get("reject_h0", ""),
+                "status": cell.get("status", ""),
+            })
+    pd.DataFrame(rows_cell).to_csv(OUT_DIR / "h0_per_cella.csv", index=False, encoding="utf-8-sig")
+    print("  CSV: h0_per_cella.csv")
+
+    # Sintesi
+    rows_synth = []
+    for ev in ev_names:
+        s = synthesis["per_evento"].get(ev, {})
+        rows_synth.append({
+            "dimensione": "evento", "categoria": ev,
+            "chi2_fisher": round(s.get("chi2", np.nan), 3) if not np.isnan(s.get("chi2", np.nan)) else "",
+            "p_combined": round(s.get("p_combined", np.nan), 4) if not np.isnan(s.get("p_combined", np.nan)) else "",
+            "k_tests": s.get("k", ""),
+            "reject_h0": s.get("reject_h0", ""),
+        })
+    for fuel in fuel_names:
+        s = synthesis["per_carburante"].get(fuel, {})
+        rows_synth.append({
+            "dimensione": "carburante", "categoria": fuel,
+            "chi2_fisher": round(s.get("chi2", np.nan), 3) if not np.isnan(s.get("chi2", np.nan)) else "",
+            "p_combined": round(s.get("p_combined", np.nan), 4) if not np.isnan(s.get("p_combined", np.nan)) else "",
+            "k_tests": s.get("k", ""),
+            "reject_h0": s.get("reject_h0", ""),
+        })
+    sg = synthesis["globale"]
+    rows_synth.append({
+        "dimensione": "globale", "categoria": "tutti",
+        "chi2_fisher": round(sg.get("chi2", np.nan), 3) if not np.isnan(sg.get("chi2", np.nan)) else "",
+        "p_combined": round(sg.get("p_combined", np.nan), 4) if not np.isnan(sg.get("p_combined", np.nan)) else "",
+        "k_tests": sg.get("k", ""),
+        "reject_h0": sg.get("reject_h0", ""),
+    })
+    pd.DataFrame(rows_synth).to_csv(OUT_DIR / "h0_sintesi.csv", index=False, encoding="utf-8-sig")
+    print("  CSV: h0_sintesi.csv")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
+
 def main() -> None:
-    # ── Carica dati pompa ─────────────────────────────────────────────────────
+    print("Carico dati...")
     daily = (pd.read_csv(DAILY_CSV, parse_dates=["date"])
                .sort_values("date").set_index("date"))
 
-    # ── Carica futures e costruisce il margine ────────────────────────────────
-    print("Carico futures e EUR/USD...")
     eurusd = load_eurusd(
         csv_path=EURUSD_CSV if EURUSD_CSV.exists() else None,
-        start="2015-01-01", end="2026-12-31"
+        start="2015-01-01", end="2026-12-31",
     )
+
     gasoil_eurl  = load_futures_eurl(GASOIL_CSV, GAS_OIL, eurusd)
     eurobob_eurl = load_futures_b7h1(EUROBOB_CSV, EUROBOB_HC, eurusd) \
                    if EUROBOB_CSV.exists() else None
 
-    daily = build_margin(daily, gasoil_eurl, eurobob_eurl)
+    margin = build_margin(daily, gasoil_eurl, eurobob_eurl)
 
-    print(f"\nDati margine: {daily.index.min().date()} → {daily.index.max().date()}")
-    benz_avail = daily["margin_benzina"].dropna()
+    benz_avail = margin["margin_benzina"].dropna()
     if not benz_avail.empty:
-        print(f"  margin_benzina: {benz_avail.index.min().date()} → {benz_avail.index.max().date()}")
-    print(f"  margin_gasolio: {daily['margin_gasolio'].dropna().index.min().date()} → "
-          f"{daily['margin_gasolio'].dropna().index.max().date()}")
-    print(f"\nConfigurazione: HALF_WIN={HALF_WIN}g  SEARCH=±{SEARCH}g  STEP={STEP}g")
-    print(f"Nota CLT: con HALF_WIN={HALF_WIN} e φ≈0.3 → n_eff≈{int(HALF_WIN*0.54)} "
-          f"({'OK' if int(HALF_WIN*0.54)>=30 else 'approssimato, considera HALF_WIN≥60'})\n")
+        print(f"  Margine benzina: {benz_avail.index.min().date()} → {benz_avail.index.max().date()}")
+    else:
+        print("  Margine benzina: Eurobob non disponibile")
+    print(f"  Margine gasolio: {margin['margin_gasolio'].dropna().index.min().date()} → "
+          f"{margin['margin_gasolio'].dropna().index.max().date()}")
 
-    # ── Grafico 0: serie storica completa + PELT globale ─────────────────────
-    print("Grafico 0: margine completo con change point globali (PELT)...")
-    _plot_global_margins(daily, OUT_DIR)
+    # ── Grafico 0: serie storica ──────────────────────────────────────────────
+    print("\nGrafico 0: serie storica margine...")
+    fig0 = plot_margin_series(margin)
+    out0 = OUT_DIR / "00_margine_serie_storica.png"
+    fig0.savefig(out0, dpi=150, bbox_inches="tight")
+    plt.close(fig0)
+    print(f"  ✓ {out0.name}")
+
+    # ── Diagnostiche per evento × carburante ──────────────────────────────────
+    fuel_margin_col = {"gasolio": "margin_gasolio", "benzina": "margin_benzina"}
+    fuel_color_map  = {"gasolio": "#1D3557", "benzina": "#E63946"}
 
     all_results: dict = {}
-
     for ev_name, ev in EVENTS.items():
         shock = ev["shock"]
+        print(f"\n{'═'*72}")
+        print(f"  {ev_name}  (shock={shock.date()})")
+        print(f"{'═'*72}")
+        all_results[ev_name] = {}
 
-        available = daily[(daily.index >= ev["pre_start"]) &
-                          (daily.index <= ev["post_end"])]
-        if available.empty:
-            print(f"⚠  {ev_name}: nessun dato disponibile, salto.")
-            continue
-
-        print(f"{'═'*70}")
-        print(f"  EVENTO: {ev_name}  (shock={shock.date()})")
-        print(f"  Finestra: {ev['pre_start'].date()} → {ev['post_end'].date()}")
-        print(f"{'═'*70}")
-
-        fig = plt.figure(figsize=(18, 14))
-        fig.suptitle(
-            f"Change-point detection sul MARGINE – {ev_name}\n"
-            f"Shock: {ev['label'].replace(chr(10), ' ')}",
-            fontsize=13, fontweight="bold"
-        )
-
-        gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.55, wspace=0.30)
-
-        ev_results: dict = {}
-
-        for col_idx, (fuel_key, (col_name, fuel_color)) in enumerate(FUELS.items()):
-            if col_name not in daily.columns:
-                print(f"  Colonna {col_name} non trovata, salto.")
+        for fuel_key, margin_col in fuel_margin_col.items():
+            win = margin[margin_col][
+                (margin.index >= ev["pre_start"]) &
+                (margin.index <= ev["post_end"])
+            ].dropna()
+            if len(win) < 20:
+                print(f"  [{fuel_key}] dati insufficienti (n={len(win)}) — salto.")
                 continue
+            diag = run_diagnostics(win, shock, fuel_key)
+            # Attacca i residui AR al risultato normalità per il plot
+            diag["normality"]["_ar_residuals"] = diag["autocorrelation"]["residuals"]
+            all_results[ev_name][fuel_key] = diag
 
-            series = daily[col_name].dropna()
+    # ── 30 grafici diagnostici ────────────────────────────────────────────────
+    TEST_PLOT_FNS = [
+        ("01_stazionarieta",    "stationarity",    plot_one_stationarity),
+        ("02_autocorrelazione", "autocorrelation", plot_one_autocorrelation),
+        ("03_normalita",        "normality",        plot_one_normality),
+        ("04_omoschedasticita", "homoscedasticity", plot_one_homoscedasticity),
+        ("05_arch",             "arch",             plot_one_arch),
+    ]
 
-            # Benzina: salta evento se non ci sono dati nel range
-            win_check = series[(series.index >= ev["pre_start"]) &
-                               (series.index <= ev["post_end"])]
-            if len(win_check) < 2 * HALF_WIN:
-                print(f"  [{fuel_key}] dati insufficienti nel range "
-                      f"(n={len(win_check)}), salto.")
+    print(f"\n{'═'*72}")
+    print("Generazione grafici diagnostici...")
+    count = 0
+    for ev_name, ev in EVENTS.items():
+        ev_slug = (ev_name.lower()
+                   .replace(" ", "_").replace("(","").replace(")","")
+                   .replace("/","").replace("-","_"))
+        for fuel_key in ("gasolio", "benzina"):
+            if fuel_key not in all_results.get(ev_name, {}):
                 continue
+            res_all = all_results[ev_name][fuel_key]
+            fcolor  = fuel_color_map[fuel_key]
+            win = margin[fuel_margin_col[fuel_key]][
+                (margin.index >= ev["pre_start"]) &
+                (margin.index <= ev["post_end"])
+            ].dropna()
 
-            ax_price = fig.add_subplot(gs[0, col_idx])
-            ax_cusum = fig.add_subplot(gs[1, col_idx])
-            ax_tstat = fig.add_subplot(gs[2, col_idx])
-            ax_bic   = fig.add_subplot(gs[3, col_idx])
+            for prefix, test_key, fn in TEST_PLOT_FNS:
+                fig = fn(win, ev, fuel_key, fcolor, res_all[test_key])
+                out = OUT_DIR / f"{prefix}__{ev_slug}__{fuel_key}.png"
+                fig.savefig(out, dpi=150, bbox_inches="tight")
+                plt.close(fig)
+                print(f"  ✓ {out.name}")
+                count += 1
 
-            ax_price.set_title(
-                f"{fuel_key.capitalize()} – {ev['label'].replace(chr(10),' ')}",
-                fontsize=9, fontweight="bold", pad=4
-            )
+    # ════════════════════════════════════════════════════════════════════════════
+    # H₀ — TEST FINALE: i distributori italiani generano profitti anomali?
+    # ════════════════════════════════════════════════════════════════════════════
+    print(f"\n{'═'*72}")
+    print("  H₀ FINALE — Profitti anomali in prossimità di shock geopolitici?")
+    print(f"  H₀: il margine post-shock NON supera quello pre-shock")
+    print(f"  Test: Mann-Whitney U one-sided + Cliff's δ")
+    print(f"  Finestra: {H0_PRE_DAYS}gg pre / {H0_POST_DAYS}gg post shock (dalla serie completa)")
+    print(f"{'═'*72}")
 
-            res = plot_event_fuel(
-                ev_name, ev, series,
-                fuel_label=fuel_key.capitalize(),
-                fuel_color=fuel_color,
-                ax_price=ax_price,
-                ax_cusum=ax_cusum,
-                ax_tstat=ax_tstat,
-                ax_bic=ax_bic,
-            )
-            ev_results[fuel_key] = res
+    h0_grid: dict = {}
+    for ev_name, ev in EVENTS.items():
+        shock = ev["shock"]
+        h0_grid[ev_name] = {}
+        print(f"\n  ▶ {ev_name}  (shock={shock.date()})")
+        for fuel_key, margin_col in fuel_margin_col.items():
+            full_margin_series = margin[margin_col]
+            result = test_h0_speculative(full_margin_series, shock)
+            h0_grid[ev_name][fuel_key] = result
+            icon = "✗" if result.get("reject_h0") else "✓"
+            print(f"    {icon} {fuel_key:<10}  {result['detail']}")
 
-            if res:
-                print(f"\n  [{fuel_key.upper()}]")
-                print(f"    L1 τ={res['L1_tau'].date()}  Δ={res['L1_delta']:+.4f} €/L"
-                      f"  p_bonf={res['L1_p_bonf']:.3f}"
-                      f"  {'★ significativo' if res['L1_p_bonf']<0.05 else '– non sig.'}")
-                print(f"    L2 CUSUM peak = {res['L2_cusum'].date()}")
-                print(f"    L3 BinSeg ({res['L3_best_n']} break ottimale): "
-                      + (", ".join(str(d.date()) for d in res['L3_binseg']) or "nessuno"))
-                print(f"    L4 PELT ({len(res['L4_pelt'])} break): "
-                      + (", ".join(str(d.date()) for d in res['L4_pelt']) or "nessuno"))
+    # Sintesi Fisher
+    print(f"\n  Sintesi Fisher combination:")
+    synthesis = synthesize_h0(h0_grid)
 
-        all_results[ev_name] = ev_results
+    print(f"\n  Per evento:")
+    for ev, s in synthesis["per_evento"].items():
+        r = "RIFIUTO H₀" if s["reject_h0"] else "NON RIFIUTO H₀"
+        p = s.get("p_combined", np.nan)
+        print(f"    {'✗' if s['reject_h0'] else '✓'} {ev:<30}  Fisher χ²(2k={s['k']*2})  "
+              f"p={p:.4f}  → {r}")
 
-        out = OUT_DIR / f"cp_margin_{ev_name.replace(' ','_').replace('/','')}.png"
-        fig.savefig(out, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        print(f"\n  → Salvato: {out}\n")
+    print(f"\n  Per carburante:")
+    for fuel, s in synthesis["per_carburante"].items():
+        r = "RIFIUTO H₀" if s["reject_h0"] else "NON RIFIUTO H₀"
+        p = s.get("p_combined", np.nan)
+        print(f"    {'✗' if s['reject_h0'] else '✓'} {fuel:<12}  Fisher χ²(2k={s['k']*2})  "
+              f"p={p:.4f}  → {r}")
 
-    # ── Riepilogo finale ──────────────────────────────────────────────────────
-    print(f"\n{'═'*70}")
-    print("RIEPILOGO CHANGE POINT MARGINE – tutti gli eventi")
-    print(f"{'═'*70}")
-    print(f"{'Evento':<28} {'Carb.':<10} {'L1 τ':<13} {'Δ €/L':>8} "
-          f"{'p_bonf':>8} {'L4 PELT break'}")
-    print("-"*80)
-    for ev_name, fuels in all_results.items():
-        for fuel, res in fuels.items():
-            if not res:
-                continue
-            pelt_str = ", ".join(str(d.date()) for d in res["L4_pelt"]) or "—"
-            print(f"{ev_name:<28} {fuel:<10} {str(res['L1_tau'].date()):<13} "
-                  f"{res['L1_delta']:>+8.4f} {res['L1_p_bonf']:>8.3f}  {pelt_str}")
+    sg = synthesis["globale"]
+    p_g = sg.get("p_combined", np.nan)
+    print(f"\n  ┌─────────────────────────────────────────────────────────┐")
+    print(f"  │  SINTESI GLOBALE  Fisher χ²(2k={sg['k']*2})  p={p_g:.4f}       │")
+    if sg["reject_h0"]:
+        print(f"  │  → RIFIUTO H₀: evidenza di profitti anomali           │")
+    else:
+        print(f"  │  → NON RIFIUTO H₀: margini coerenti con i costi       │")
+    print(f"  └─────────────────────────────────────────────────────────┘")
+
+    # Grafici H₀
+    print(f"\n{'═'*72}")
+    print("Generazione grafici H₀...")
+
+    fig_matrix = plot_h0_verdict_matrix(h0_grid, synthesis)
+    out_matrix = OUT_DIR / "h0_verdict_matrix.png"
+    fig_matrix.savefig(out_matrix, dpi=150, bbox_inches="tight")
+    plt.close(fig_matrix)
+    print(f"  ✓ {out_matrix.name}")
+
+    fig_dist = plot_h0_distributions(margin, h0_grid)
+    out_dist = OUT_DIR / "h0_distributions.png"
+    fig_dist.savefig(out_dist, dpi=150, bbox_inches="tight")
+    plt.close(fig_dist)
+    print(f"  ✓ {out_dist.name}")
+
+    # CSV
+    print(f"\n{'═'*72}")
+    print("Export CSV...")
+    export_diagnostic_csv(all_results)
+    export_h0_csv(h0_grid, synthesis)
+
+    print(f"\nDone. {count} grafici diagnostici + 2 grafici H₀ + CSV in: {OUT_DIR}")
 
 
 if __name__ == "__main__":

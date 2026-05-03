@@ -109,8 +109,8 @@ _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
 # v4 usa BOCPD (Bayesian Online) come detection autonoma — non legge theta_results.csv
 
 PRE_START   = pd.Timestamp("2015-01-01")  # inizio dataset per il fit ARIMA
-PRE_WIN     = 30    # giorni pre-T0 usati SOLO per il plot (no-lookahead garantito)
-POST_WIN    = 30    # giorni post-T0 per l'analisi intervento
+PRE_WIN     = 40    # giorni pre-T0 usati SOLO per il plot (no-lookahead garantito)
+POST_WIN    = 40    # giorni post-T0 per l'analisi intervento
 CI_ALPHA    = 0.05   # CI al 90%
 SEARCH      = 30    # PELT: ricerca ±SEARCH giorni dallo shock
 CCF_NLAGS   = 20    # numero di lag CCF da calcolare

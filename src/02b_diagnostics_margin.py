@@ -1,60 +1,127 @@
 #!/usr/bin/env python3
 """
-02b_diagnostics_margin.py
-=========================
-Stessi 5 test diagnostici di 02b_diagnostics.py ma applicati al MARGINE:
+02_change_point_detection_margin.py
+=====================================
+Change-point detection sul MARGINE (prezzo netto pompa − futures €/L)
+benzina e gasolio in corrispondenza di eventi geopolitici rilevanti.
 
-    margine = prezzo_netto (ex-tasse, da SISEN) − prezzo_wholesale (futures €/L)
+Metodologia — Rasoio di Occam (dal più semplice al più sofisticato)
+────────────────────────────────────────────────────────────────────
+  L1 · Sliding-window two-sample t-test
+       Finestra di HALF_WIN=40 giorni per lato; il punto di rottura τ
+       scorre da –SEARCH giorni a +SEARCH giorni rispetto all'evento
+       con step=1 (risoluzione giornaliera). Correzione p-value: Bonferroni.
+       → restituisce 1 break point (il più forte).
 
-Dati:
-  • gasolio  → Gas Oil Futures (2017-01-02 → oggi)      — copertura completa su tutti e 3 gli eventi
-  • benzina  → Eurobob B7H1 Futures (2015-01-01 → oggi) — copertura completa su tutti e 3 gli eventi
-              Fonte: Eurobob_B7H1_date.csv  (scraping TradingView NYMEX:B7H1!)
-              Colonne: data, timestamp (Unix), apertura, massimo, minimo, chiusura, variazione, volume
-              Prezzi in USD/MT → convertiti in €/L tramite EUR/USD + heat content Eurobob
+  L2 · CUSUM (Cumulative SUM of deviations)
+       Deviazione cumulata dalla media pre-evento sul livello di prezzo.
+       Picco/valle = momento di rottura strutturale. Semplice, visivo.
+       → 1 break point.
 
-Output in data/plots/price/margin/:
-  • 00_margine_serie_storica.png   — serie temporale del margine (entrambi i carburanti)
-  • 30 PNG diagnostici             — 5 test × 3 eventi × 2 carburanti
-  • 6 CSV con risultati numerici
-  • README.md
+  L3 · Binary Segmentation (ruptures – BinSeg, costo L2)
+       Cerca esattamente N break points; usa BIC per scegliere N ottimale
+       tra 1 e MAX_BKPS. → potenzialmente MULTIPLI break point.
+
+  L4 · PELT – Pruned Exact Linear Time (ruptures, penalizzazione BIC)
+       Soluzione globale esatta con N incognito; O(n log n).
+       → potenzialmente MULTIPLI break point.
+
+Finestra ottimale e CLT
+────────────────────────
+  Prezzi giornalieri: autocorrelazione AR(1) con φ ≈ 0.2–0.3.
+  Dimensione effettiva del campione: n_eff ≈ n·(1-φ)/(1+φ).
+  Con φ=0.3 → n_eff = n·0.54.
+  Per n_eff ≥ 30 (CLT solido) serve n ≥ 56 → uso HALF_WIN=40 (minimo
+  pratico, n_eff≈22) con la consapevolezza che il test t è approssimato.
+  Se vuoi CLT garantito imposta HALF_WIN=60.
+
+  Sliding step = 1 giorno (risoluzione massima, 2·SEARCH+1 test totali;
+  si applica correzione Bonferroni sui p-value).
+  Step = 7 riduce il multiple testing ma perde risoluzione infrasettimanale.
+
+Dipendenze extra:
+  pip install ruptures
 """
 
 from __future__ import annotations
 
 import warnings
 from pathlib import Path
+from typing import Optional
 
 import matplotlib.dates as mdates
-import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import numpy as np
 import pandas as pd
 from scipy import stats
-from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch
-from statsmodels.tsa.stattools import adfuller, kpss
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent / "utils"))
 from conversions import GAS_OIL, EUROBOB as EUROBOB_HC, load_eurusd, usd_ton_to_eur_liter
 
+try:
+    import ruptures as rpt
+    HAS_RUPTURES = True
+except ImportError:
+    HAS_RUPTURES = False
+    warnings.warn("ruptures non installato – L3/L4 disabilitati. "
+                  "Installa con: pip install ruptures")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# n_eff helpers (AR(1) autocorrelation correction)
+# ══════════════════════════════════════════════════════════════════════════════
+def _phi_ar1(x: np.ndarray) -> float:
+    """Lag-1 autocorrelation (AR(1) coefficient) — clamped to (-0.99, 0.99)."""
+    if len(x) < 3:
+        return 0.0
+    x = x - x.mean()
+    r = float(np.corrcoef(x[:-1], x[1:])[0, 1])
+    return float(np.clip(r, -0.99, 0.99))
+
+
+def _n_eff(x: np.ndarray) -> float:
+    """Effective sample size corrected for AR(1) autocorrelation."""
+    phi = _phi_ar1(x)
+    return max(2.0, len(x) * (1 - phi) / (1 + phi))
+
+
+def _welch_neff(a: np.ndarray, b: np.ndarray):
+    """
+    Welch t-test with n_eff-corrected degrees of freedom.
+    Returns (t_stat, p_value).
+    """
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    na, nb = _n_eff(a), _n_eff(b)
+    va, vb = a.var(ddof=1) / na, b.var(ddof=1) / nb
+    se = np.sqrt(va + vb)
+    if se == 0:
+        return 0.0, 1.0
+    t = (a.mean() - b.mean()) / se
+    # Welch–Satterthwaite df
+    df = (va + vb) ** 2 / (va ** 2 / (na - 1) + vb ** 2 / (nb - 1))
+    p = 2 * stats.t.sf(abs(t), df=df)
+    return float(t), float(p)
+
+
 # ── Configurazione ─────────────────────────────────────────────────────────────
-BASE_DIR    = Path(__file__).parent
-DAILY_CSV   = BASE_DIR / "data" / "processed" / "daily_fuel_prices_all.csv"
-GASOIL_CSV  = BASE_DIR / "data" / "Futures" / "London Gas Oil Futures Historical Data.csv"
-EUROBOB_CSV = BASE_DIR / "data" / "Futures" / "Eurobob_B7H1_date.csv"
-EURUSD_CSV  = BASE_DIR / "data" / "raw" / "eurusd.csv"
-OUT_DIR     = BASE_DIR / "data" / "plots" / "diagnostics" / "margin"
+BASE_DIR     = Path(__file__).parent
+DAILY_CSV    = BASE_DIR / "data" / "processed" / "daily_fuel_prices_all.csv"
+GASOIL_CSV   = BASE_DIR / "data" / "Futures" / "London Gas Oil Futures Historical Data.csv"
+EUROBOB_CSV  = BASE_DIR / "data" / "Futures" / "Eurobob_B7H1_date.csv"
+EURUSD_CSV   = BASE_DIR / "data" / "raw" / "eurusd.csv"
+OUT_DIR      = BASE_DIR / "data" / "plots" / "change_point" / "margin"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-ALPHA     = 0.05
-HALF_WIN  = 40
-LB_LAGS   = [5, 10, 20]
-ARCH_LAGS = 10
+HALF_WIN   = 40
+SEARCH     = 40
+STEP       = 1
+MAX_BKPS   = 5
+MIN_SIZE   = 14
 
 FUELS = {
-    "benzina": ("#E63946", EUROBOB_HC),
-    "gasolio": ("#1D3557", GAS_OIL),
+    "benzina": ("margin_benzina", "#E63946"),
+    "gasolio": ("margin_gasolio", "#1D3557"),
 }
 
 EVENTS: dict[str, dict] = {
@@ -81,17 +148,320 @@ EVENTS: dict[str, dict] = {
     },
 }
 
-_OK   = "#2ecc71"
-_WARN = "#f39c12"
-_FAIL = "#e74c3c"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# L1 – Sliding-window t-test
+# ══════════════════════════════════════════════════════════════════════════════
+def _bh_correction(p_values: np.ndarray) -> np.ndarray:
+    """
+    Benjamini-Hochberg FDR correction (Benjamini & Hochberg, 1995).
+    Preferibile a Bonferroni per test correlati (finestre sliding si sovrappongono):
+      • Bonferroni assume indipendenza e ipercorregge su test correlati.
+      • BH controlla il False Discovery Rate; mantiene maggiore potenza.
+    Restituisce p-value aggiustati (clip a 1.0).
+    """
+    n = len(p_values)
+    if n == 0:
+        return p_values
+    order = np.argsort(p_values)
+    rank  = np.empty(n, dtype=float)
+    rank[order] = np.arange(1, n + 1)
+    # p_adj[i] = min(p_raw[i] * n / rank[i], 1)  — calcolo BH step-up
+    p_adj = np.minimum(p_values * n / rank, 1.0)
+    # Step-up: garantisce monotonia (p_adj deve essere non-decrescente in rank)
+    p_adj_sorted = p_adj[order]
+    for i in range(n - 2, -1, -1):
+        p_adj_sorted[i] = min(p_adj_sorted[i], p_adj_sorted[i + 1])
+    p_adj[order] = p_adj_sorted
+    return p_adj
+
+
+def sliding_ttest(
+    series: pd.Series,
+    shock: pd.Timestamp,
+    half_win: int = HALF_WIN,
+    search: int   = SEARCH,
+    step: int     = STEP,
+) -> pd.DataFrame:
+    """
+    Per ogni candidato τ in [shock–search, shock+search] (step=step giorni),
+    esegue un Welch t-test con n_eff tra i HALF_WIN giorni prima e dopo τ.
+    Restituisce DataFrame ordinato per |t_stat| decrescente.
+
+    Correzione p-value: Benjamini-Hochberg (FDR).
+      La correzione Bonferroni (precedente) assume indipendenza dei test,
+      ma le finestre sliding si sovrappongono → test correlati → Bonferroni
+      ipercorregge (rigetta meno del dovuto). BH è più appropriato e mantiene
+      maggiore potenza in presenza di correlazione positiva tra test.
+
+    Nota sul CLT:
+      Con half_win=40 e autocorrelazione AR(1) φ≈0.3,
+      n_eff ≈ 40 * 0.54 ≈ 22 < 30  →  CLT approssimativo.
+      Imposta half_win=60 per CLT garantito.
+    """
+    idx  = series.index
+    rows = []
+
+    candidates = pd.date_range(
+        shock - pd.Timedelta(days=search),
+        shock + pd.Timedelta(days=search),
+        freq=f"{step}D",
+    )
+
+    for tau in candidates:
+        pre  = series[(idx >= tau - pd.Timedelta(days=half_win)) & (idx < tau)].dropna()
+        post = series[(idx >= tau) & (idx < tau + pd.Timedelta(days=half_win))].dropna()
+        if len(pre) < 5 or len(post) < 5:
+            continue
+        t, p = _welch_neff(pre.values, post.values)
+        delta = post.mean() - pre.mean()
+        rows.append({"tau": tau, "t_stat": t, "p_raw": p, "delta_mean": delta,
+                     "n_pre": len(pre), "n_post": len(post)})
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    # Correzione BH (FDR) — sostituisce Bonferroni per test sliding correlati
+    df["p_bh"]  = _bh_correction(df["p_raw"].values)
+    # Mantieni p_bonf per confronto/retrocompatibilità CSV
+    df["p_bonf"] = (df["p_raw"] * len(df)).clip(upper=1.0)
+    df["abs_t"]  = df["t_stat"].abs()
+    return df.sort_values("abs_t", ascending=False).reset_index(drop=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Caricamento dati
+# L2 – CUSUM
 # ══════════════════════════════════════════════════════════════════════════════
+def cusum(
+    series: pd.Series,
+    shock: pd.Timestamp,
+    pre_window: int = HALF_WIN,
+) -> tuple[pd.Series, pd.Timestamp]:
+    """
+    CUSUM delle deviazioni dalla media pre-evento.
+    Restituisce (serie CUSUM, data del massimo |CUSUM|).
+    """
+    baseline = series[series.index < shock].tail(pre_window).mean()
+    dev      = series - baseline
+    cs       = dev.cumsum()
+    peak_idx = cs.abs().idxmax()
+    return cs, peak_idx
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# L3 – Binary Segmentation  (ruptures)
+# ══════════════════════════════════════════════════════════════════════════════
+def binseg_detect(
+    series: pd.Series,
+    max_bkps: int  = MAX_BKPS,
+    min_size: int  = MIN_SIZE,
+    model: str     = "rbf",
+) -> dict[int, list[pd.Timestamp]]:
+    """
+    BinSeg su 1..max_bkps break point; sceglie N ottimale con BIC.
+    Restituisce {n_bkps: [date break point]} per ogni N testato,
+    più la chiave 'best' con N ottimale.
+    """
+    if not HAS_RUPTURES:
+        return {}
+
+    signal = series.values.reshape(-1, 1)
+    algo   = rpt.Binseg(model=model, min_size=min_size).fit(signal)
+
+    results: dict = {}
+    costs   = []
+
+    for n in range(1, max_bkps + 1):
+        try:
+            bkps = algo.predict(n_bkps=n)  # indici (1-based, ultimo = len)
+        except Exception:
+            continue
+        dates = [series.index[b - 1] for b in bkps[:-1]]  # escludi sentinel
+        results[n] = dates
+        # Costo BIC: costo_residuo + n * log(T)
+        cost = algo.cost.sum_of_costs(bkps)
+        bic  = cost + n * np.log(len(signal))
+        costs.append((n, bic))
+
+    if costs:
+        best_n = min(costs, key=lambda x: x[1])[0]
+        results["best"] = results[best_n]
+        results["best_n"] = best_n
+        results["bic_curve"] = costs
+
+    return results
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# L4 – PELT  (ruptures)
+# ══════════════════════════════════════════════════════════════════════════════
+def pelt_detect(
+    series: pd.Series,
+    min_size: int = MIN_SIZE,
+    model: str    = "rbf",
+) -> list[pd.Timestamp]:
+    """
+    PELT con penalizzazione BIC (pen = log(T)).
+    Restituisce lista di date dei change point rilevati.
+    """
+    if not HAS_RUPTURES:
+        return []
+
+    signal = series.values.reshape(-1, 1)
+    pen    = np.log(len(signal))  # BIC
+    try:
+        algo = rpt.Pelt(model=model, min_size=min_size).fit(signal)
+        bkps = algo.predict(pen=pen)
+    except Exception as e:
+        warnings.warn(f"PELT fallito: {e}")
+        return []
+
+    return [series.index[b - 1] for b in bkps[:-1]]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Plotting per evento + carburante
+# ══════════════════════════════════════════════════════════════════════════════
+def plot_event_fuel(
+    event_name: str,
+    ev: dict,
+    series: pd.Series,
+    fuel_label: str,
+    fuel_color: str,
+    ax_price:  plt.Axes,
+    ax_cusum:  plt.Axes,
+    ax_tstat:  plt.Axes,
+    ax_bic:    plt.Axes,
+) -> dict:
+    """Disegna i 4 pannelli per un singolo carburante e restituisce risultati."""
+
+    # ── Slice della finestra ──────────────────────────────────────────────────
+    win = series[(series.index >= ev["pre_start"]) &
+                 (series.index <= ev["post_end"])].dropna()
+    if len(win) < 2 * HALF_WIN:
+        ax_price.set_title(f"{fuel_label} – dati insufficienti", fontsize=9)
+        return {}
+
+    shock = ev["shock"]
+    color = fuel_color
+
+    # ── L1: sliding t-test ────────────────────────────────────────────────────
+    ttest_df = sliding_ttest(win, shock)
+    best_tau = ttest_df.iloc[0]["tau"]   if not ttest_df.empty else shock
+    best_t   = ttest_df.iloc[0]["t_stat"] if not ttest_df.empty else 0
+    best_p   = ttest_df.iloc[0]["p_bh"]  if not ttest_df.empty else 1  # BH (ex Bonferroni)
+    delta    = ttest_df.iloc[0]["delta_mean"] if not ttest_df.empty else 0
+
+    # ── L2: CUSUM ─────────────────────────────────────────────────────────────
+    cs, cusum_peak = cusum(win, shock)
+
+    # ── L3: BinSeg ───────────────────────────────────────────────────────────
+    binseg_res = binseg_detect(win)
+    binseg_best = binseg_res.get("best", [])
+
+    # ── L4: PELT ─────────────────────────────────────────────────────────────
+    pelt_breaks = pelt_detect(win)
+
+    # ════ PANNELLO 1: prezzi + break lines  (zoom ±50 giorni dallo shock) ══════
+    zoom_start = shock - pd.Timedelta(days=50)
+    zoom_end   = shock + pd.Timedelta(days=50)
+    win_zoom   = win[(win.index >= zoom_start) & (win.index <= zoom_end)]
+
+    ax_price.plot(win_zoom.index, win_zoom.values, color=color, lw=0.9, label=fuel_label)
+    ax_price.axvline(shock,     color=ev["color"], lw=1.5, ls="--", label="Evento")
+    ax_price.axvline(best_tau,  color=color, lw=1.2, ls=":", alpha=0.8,
+                     label=f"L1 τ={best_tau.date()}")
+    ax_price.axvline(cusum_peak, color="darkorange", lw=1.0, ls="-.",
+                     label=f"L2 CUSUM={cusum_peak.date()}")
+    for i, d in enumerate(pelt_breaks):
+        if zoom_start <= d <= zoom_end:
+            ax_price.axvline(d, color="green", lw=0.8, ls=":", alpha=0.7,
+                             label=f"L4 PELT" if i == 0 else "")
+    for i, d in enumerate(binseg_best):
+        if zoom_start <= d <= zoom_end:
+            ax_price.axvline(d, color="purple", lw=0.8, ls=":", alpha=0.7,
+                             label=f"L3 BinSeg" if i == 0 else "")
+    ax_price.set_xlim(zoom_start, zoom_end)
+    ax_price.set_ylabel("Margine (€/L)", fontsize=8)
+    ax_price.legend(fontsize=6, loc="upper left", ncol=2)
+    ax_price.grid(axis="y", alpha=0.25)
+    ax_price.xaxis.set_major_formatter(mdates.DateFormatter("%d %b %Y"))
+    ax_price.xaxis.set_major_locator(mdates.WeekdayLocator(interval=2))
+    plt.setp(ax_price.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=7)
+
+    # ════ PANNELLO 2: CUSUM ═══════════════════════════════════════════════════
+    ax_cusum.plot(cs.index, cs.values, color=color, lw=0.9)
+    ax_cusum.axhline(0, color="grey", lw=0.7, ls="--")
+    ax_cusum.axvline(shock,      color=ev["color"], lw=1.5, ls="--")
+    ax_cusum.axvline(cusum_peak, color="darkorange", lw=1.2, ls="-.")
+    ax_cusum.set_ylabel("CUSUM margine (€/L)", fontsize=8)
+    ax_cusum.fill_between(cs.index, cs.values, 0,
+                          where=cs.values > 0, alpha=0.15, color=color)
+    ax_cusum.fill_between(cs.index, cs.values, 0,
+                          where=cs.values < 0, alpha=0.15, color="green")
+    ax_cusum.grid(axis="y", alpha=0.25)
+    ax_cusum.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+
+    # ════ PANNELLO 3: t-stat sliding — solo τ dove margine CRESCE (Δ > 0) ══════
+    if not ttest_df.empty:
+        rising = ttest_df[ttest_df["delta_mean"] > 0]
+        ax_tstat.plot(rising["tau"], rising["t_stat"].abs(),
+                      color=color, lw=0.9, label="Δ > 0 (margine cresce)")
+        ax_tstat.axvline(shock,    color=ev["color"], lw=1.5, ls="--", label="Evento")
+        if not rising.empty and best_tau in rising["tau"].values:
+            ax_tstat.axvline(best_tau, color=color, lw=1.2, ls=":", label=f"τ={best_tau.date()}")
+        ax_tstat.axhline(stats.t.ppf(0.975, df=HALF_WIN * 2 - 2),
+                         color="grey", lw=0.7, ls=":", label="α=0.05")
+        ax_tstat.set_ylabel("|t-stat|  (solo Δ>0)", fontsize=8)
+        ax_tstat.legend(fontsize=6)
+        sig = "★" if best_p < 0.05 else ""
+        ax_tstat.set_title(
+            f"L1 sliding t-test  |  τ={best_tau.date()}  "
+            f"Δ={delta:+.4f} €/L  p_bh={best_p:.3f}{sig}  [BH-FDR]",
+            fontsize=7, pad=2
+        )
+    ax_tstat.grid(axis="y", alpha=0.25)
+    ax_tstat.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+
+    # ════ PANNELLO 4: BIC curve BinSeg ════════════════════════════════════════
+    if binseg_res.get("bic_curve"):
+        ns, bics = zip(*binseg_res["bic_curve"])
+        ax_bic.plot(ns, bics, marker="o", color=color, lw=1)
+        best_n = binseg_res.get("best_n", 1)
+        ax_bic.axvline(best_n, color="grey", lw=0.8, ls="--",
+                       label=f"N ottimale={best_n}")
+        ax_bic.set_xlabel("N break point", fontsize=8)
+        ax_bic.set_ylabel("BIC", fontsize=8)
+        ax_bic.set_xticks(list(ns))
+        ax_bic.legend(fontsize=6)
+        ax_bic.set_title(
+            f"L3 BinSeg: {len(binseg_best)} break  |  "
+            f"L4 PELT: {len(pelt_breaks)} break  →  "
+            + (", ".join(str(d.date()) for d in pelt_breaks) if pelt_breaks else "nessuno"),
+            fontsize=7, pad=2
+        )
+    else:
+        ax_bic.text(0.5, 0.5, "ruptures non disponibile",
+                    ha="center", va="center", transform=ax_bic.transAxes, fontsize=8)
+    ax_bic.grid(alpha=0.25)
+
+    return {
+        "L1_tau":      best_tau,
+        "L1_t":        best_t,
+        "L1_p_bh":     best_p,    # BH-FDR (ex Bonferroni — più appropriato per sliding window)
+        "L1_delta":    delta,
+        "L2_cusum":    cusum_peak,
+        "L3_binseg":   binseg_best,
+        "L3_best_n":   binseg_res.get("best_n"),
+        "L4_pelt":     pelt_breaks,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Main
+# ══════════════════════════════════════════════════════════════════════════════
 def load_futures_eurl(path: Path, hc, eurusd: pd.Series) -> pd.Series:
-    """Carica Gas Oil CSV con formato standard Investing.com (Date, Price in USD/MT)."""
     df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
     df["date"] = pd.to_datetime(df["Date"], format="%m/%d/%Y", errors="coerce")
     df["price_usd_ton"] = (df["Price"].str.replace(",", "", regex=False)
@@ -101,24 +471,11 @@ def load_futures_eurl(path: Path, hc, eurusd: pd.Series) -> pd.Series:
 
 
 def load_futures_b7h1(path: Path, hc, eurusd: pd.Series) -> pd.Series:
-    """
-    Carica Eurobob_B7H1_date.csv prodotto dallo scraper TradingView.
-
-    Colonne attese:
-        data       — etichetta testuale (es. "01 gen 2015"), usata solo come fallback
-        timestamp  — Unix timestamp (secondi UTC), fonte primaria per la data
-        chiusura   — prezzo di chiusura in USD/MT (formato decimale già normalizzato)
-
-    Restituisce una pd.Series indicizzata per data con i prezzi in €/L.
-    """
     df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
-
-    # ── Data: usa timestamp Unix se disponibile, altrimenti colonna 'data' ──
     if "timestamp" in df.columns:
         ts = pd.to_numeric(df["timestamp"], errors="coerce")
         df["date"] = pd.to_datetime(ts, unit="s", utc=True).dt.tz_localize(None).dt.normalize()
     else:
-        # Fallback: colonna 'data' in formato italiano (es. "01 gen 2015")
         _IT_MONTHS = {
             "gen": "Jan", "feb": "Feb", "mar": "Mar", "apr": "Apr",
             "mag": "May", "giu": "Jun", "lug": "Jul", "ago": "Aug",
@@ -129,521 +486,219 @@ def load_futures_b7h1(path: Path, hc, eurusd: pd.Series) -> pd.Series:
                 s = s.replace(it, en)
             return pd.to_datetime(s, dayfirst=True, errors="coerce")
         df["date"] = df["data"].astype(str).apply(_parse_it_date)
-
-    # ── Prezzo chiusura (già in formato decimale dallo scraper) ──
     df["price_usd_ton"] = pd.to_numeric(df["chiusura"], errors="coerce")
-
     df = (df.dropna(subset=["date", "price_usd_ton"])
-            .sort_values("date")
-            .set_index("date"))
-
-    # Rimuovi duplicati di data (tieni la prima occorrenza = più recente per quel giorno)
+            .sort_values("date").set_index("date"))
     df = df[~df.index.duplicated(keep="first")]
-
-    n = len(df)
-    date_range = f"{df.index.min().date()} → {df.index.max().date()}"
-    print(f"  B7H1 caricato: {n} righe  ({date_range})")
-
+    print(f"  B7H1: {len(df)} righe  "
+          f"({df.index.min().date()} → {df.index.max().date()})")
     return usd_ton_to_eur_liter(df["price_usd_ton"], eurusd, hc)
 
 
 def build_margin(daily: pd.DataFrame,
                  gasoil_eurl: pd.Series,
                  eurobob_eurl: pd.Series | None) -> pd.DataFrame:
-    """
-    Costruisce DataFrame con due colonne:
-      margin_gasolio = gasolio_net − gasoil_futures_eurl
-      margin_benzina = benzina_net − eurobob_futures_eurl   (NaN dove Eurobob non disponibile)
-    """
     df = daily[["benzina_net", "gasolio_net"]].copy()
-
-    # Gasolio — copertura completa
     ws_gas = gasoil_eurl.reindex(df.index, method="ffill")
     df["margin_gasolio"] = df["gasolio_net"] - ws_gas
-
-    # Benzina — solo dove Eurobob esiste
     if eurobob_eurl is not None:
         ws_benz = eurobob_eurl.reindex(df.index, method="ffill")
         df["margin_benzina"] = df["benzina_net"] - ws_benz
     else:
+        import numpy as np
         df["margin_benzina"] = np.nan
-
     return df
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Test diagnostici (identici a 02b_diagnostics.py)
+# Grafico 0 – Serie storica completa con PELT globale
 # ══════════════════════════════════════════════════════════════════════════════
-
-def test_stationarity(series: pd.Series) -> dict:
-    adf_stat, adf_p = adfuller(series.dropna(), autolag="AIC")[:2]
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        kpss_stat, kpss_p, *_ = kpss(series.dropna(), regression="c", nlags="auto")
-    adf_ok  = adf_p  < ALPHA
-    kpss_ok = kpss_p > ALPHA
-    status  = "OK" if (adf_ok and kpss_ok) else ("⚠ WARN" if (adf_ok or kpss_ok) else "✗ FAIL")
-    return {"adf_stat": adf_stat, "adf_p": adf_p,
-            "kpss_stat": kpss_stat, "kpss_p": kpss_p, "status": status,
-            "detail": f"ADF p={adf_p:.3f} ({'✓' if adf_ok else '✗'}), KPSS p={kpss_p:.3f} ({'✓' if kpss_ok else '✗'})"}
-
-
-def test_autocorrelation(series: pd.Series) -> dict:
-    diff = series.dropna().diff().dropna()
-    lb = acorr_ljungbox(diff, lags=LB_LAGS, return_df=True)
-    lb_fail = (lb["lb_pvalue"] < ALPHA).any()
-    phi = diff.autocorr(lag=1)
-    n   = len(series.dropna())
-    phi_c = max(min(phi, 0.999), -0.999)
-    n_eff = max(1, int(n * (1 - phi_c) / (1 + phi_c)))
-    lb_summary = {lag: f"{row['lb_pvalue']:.3f}" for lag, row in lb.iterrows()}
-    status = "✗ FAIL" if lb_fail else "OK"
-    return {"phi": phi, "n_eff": n_eff, "n": n, "lb": lb_summary, "lb_fail": lb_fail,
-            "status": status,
-            "detail": f"φ={phi:.3f}  n_eff={n_eff}/{n}  LB p={list(lb_summary.values())}"}
-
-
-def test_normality(series: pd.Series) -> dict:
-    diff = series.dropna().diff().dropna()
-    sw_stat, sw_p = stats.shapiro(diff) if len(diff) <= 5000 else (np.nan, np.nan)
-    jb_stat, jb_p = stats.jarque_bera(diff)
-    skew = float(stats.skew(diff))
-    kurt = float(stats.kurtosis(diff))
-    sw_ok = (sw_p > ALPHA) if not np.isnan(sw_p) else True
-    jb_ok = jb_p > ALPHA
-    status = "OK" if (sw_ok and jb_ok) else ("⚠ WARN" if (sw_ok or jb_ok) else "✗ FAIL")
-    return {"sw_stat": sw_stat, "sw_p": sw_p, "jb_stat": jb_stat, "jb_p": jb_p,
-            "skew": skew, "kurt_excess": kurt, "status": status,
-            "detail": f"SW p={sw_p:.3f}  JB p={jb_p:.3f}  skew={skew:.2f}  kurt_exc={kurt:.2f}"}
-
-
-def test_homoscedasticity(series: pd.Series, shock: pd.Timestamp) -> dict:
-    pre  = series[series.index < shock].tail(HALF_WIN).dropna()
-    post = series[series.index >= shock].head(HALF_WIN).dropna()
-    if len(pre) < 5 or len(post) < 5:
-        return {"status": "⚠ WARN", "detail": "campioni insufficienti",
-                "lev_stat": np.nan, "lev_p": np.nan, "std_pre": np.nan,
-                "std_post": np.nan, "ratio": np.nan}
-    lev_stat, lev_p = stats.levene(pre, post)
-    std_pre, std_post = float(pre.std()), float(post.std())
-    ratio = std_post / std_pre if std_pre > 0 else np.nan
-    status = "OK" if lev_p > ALPHA else "✗ FAIL"
-    return {"lev_stat": lev_stat, "lev_p": lev_p, "std_pre": std_pre,
-            "std_post": std_post, "ratio": ratio, "status": status,
-            "detail": f"Levene p={lev_p:.3f}  σ_pre={std_pre:.4f}  σ_post={std_post:.4f}  ratio={ratio:.2f}x"}
-
-
-def test_arch(series: pd.Series) -> dict:
-    diff = series.dropna().diff().dropna()
-    try:
-        lm_stat, lm_p, f_stat, f_p = het_arch(diff, nlags=ARCH_LAGS)
-        status = "OK" if lm_p > ALPHA else "✗ FAIL"
-        detail = f"ARCH-LM p={lm_p:.3f}  F-stat={f_stat:.2f}"
-    except Exception as e:
-        lm_stat = lm_p = f_stat = f_p = np.nan
-        status, detail = "⚠ WARN", f"Test fallito: {e}"
-    return {"lm_stat": lm_stat, "lm_p": lm_p, "f_stat": f_stat, "f_p": f_p,
-            "status": status, "detail": detail}
-
-
-def run_diagnostics(series: pd.Series, shock: pd.Timestamp, label: str) -> dict:
-    win = series.dropna()
-    print(f"  [{label.upper()}]  n={len(win)}")
-    r = {
-        "stationarity":    test_stationarity(win),
-        "autocorrelation": test_autocorrelation(win),
-        "normality":       test_normality(win),
-        "homoscedasticity":test_homoscedasticity(win, shock),
-        "arch":            test_arch(win),
-    }
-    for name, res in r.items():
-        icon = {"OK": "✓", "⚠ WARN": "⚠", "✗ FAIL": "✗"}.get(res["status"], "?")
-        print(f"    {icon} {name:<18}  {res['status']:<8}  {res['detail']}")
-    return r
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Grafico 0 — serie storica del margine
-# ══════════════════════════════════════════════════════════════════════════════
-
-def plot_margin_series(margin: pd.DataFrame) -> plt.Figure:
-    """Serie temporale completa del margine per entrambi i carburanti."""
-    fig, axes = plt.subplots(2, 1, figsize=(13, 7), sharex=True)
-    fig.suptitle("Margine industriale+distribuzione+retailer (€/L)\n"
-                 "= Prezzo netto ex-tasse  −  Wholesale futures convertiti",
+def _plot_global_margins(daily: pd.DataFrame, out_dir: Path) -> None:
+    """
+    Grafico unico con:
+      • margine benzina e gasolio sull'intera serie storica
+      • break point PELT rilevati sull'intera serie (linee verdi)
+      • linee verticali per i tre eventi geopolitici
+    Salva: 00_margine_serie_storica_globale.png
+    """
+    fig, axes = plt.subplots(2, 1, figsize=(16, 8), sharex=True)
+    fig.suptitle("Serie storica completa dei margini  –  Benzina e Gasolio\n"
+                 "(con change point PELT globali e eventi geopolitici)",
                  fontsize=12, fontweight="bold")
 
-    configs = [
-        ("margin_gasolio", "#1D3557", "Gasolio  (netto SISEN − Gas Oil futures €/L)", "Gasolio"),
-        ("margin_benzina", "#E63946", "Benzina  (netto SISEN − Eurobob B7H1 futures €/L)", "Benzina"),
+    fuel_cfg = [
+        ("margin_benzina", "Benzina", "#E63946"),
+        ("margin_gasolio", "Gasolio", "#1D3557"),
     ]
 
-    for ax, (col, color, desc, title) in zip(axes, configs):
-        s = margin[col].dropna()
-        if s.empty:
-            ax.text(0.5, 0.5, "Dati non disponibili", ha="center", va="center",
-                    transform=ax.transAxes, fontsize=12, color="grey")
-        else:
-            ax.fill_between(s.index, s.values, alpha=0.15, color=color)
-            ax.plot(s.index, s.values, color=color, lw=1.0, label=desc)
-            ax.axhline(s.mean(), color=color, lw=1, ls=":", alpha=0.8,
-                       label=f"media = {s.mean():.3f} €/L")
-            ax.axhline(0, color="black", lw=0.6)
+    for ax, (col, label, color) in zip(axes, fuel_cfg):
+        series = daily[col].dropna()
+        if series.empty:
+            ax.set_title(f"{label} – dati non disponibili", fontsize=9)
+            continue
 
-            # Evidenzia gli eventi
-            for ev_name, ev in EVENTS.items():
-                if ev["shock"] >= s.index.min() and ev["shock"] <= s.index.max():
-                    ax.axvline(ev["shock"], color=ev["color"], lw=1.5, ls="--", alpha=0.8)
-                    ax.text(ev["shock"], ax.get_ylim()[1] if ax.get_ylim()[1] != 1 else s.max(),
-                            f" {ev['shock'].strftime('%b %Y')}",
-                            color=ev["color"], fontsize=7, va="top")
+        # PELT sull'intera serie
+        pelt_global = pelt_detect(series)
 
-        ax.set_ylabel("€/L", fontsize=9)
-        ax.set_title(title, fontsize=10, fontweight="bold")
-        ax.legend(fontsize=8, loc="upper left")
+        ax.plot(series.index, series.values, color=color, lw=0.85, label=label)
+        ax.axhline(series.mean(), color=color, lw=0.7, ls="--", alpha=0.5,
+                   label=f"Media = {series.mean():.3f} €/L")
+
+        # Break point PELT
+        for i, d in enumerate(pelt_global):
+            ax.axvline(d, color="green", lw=1.0, ls=":", alpha=0.75,
+                       label="PELT break" if i == 0 else "")
+
+        # Eventi geopolitici
+        for ev_name, ev in EVENTS.items():
+            ax.axvline(ev["shock"], color=ev["color"], lw=1.4, ls="--", alpha=0.85,
+                       label=ev["label"].replace("\n", " "))
+
+        ax.set_ylabel("Margine (€/L)", fontsize=9)
+        ax.set_title(f"{label}  –  {len(pelt_global)} break point PELT rilevati",
+                     fontsize=9, fontweight="bold")
+        ax.legend(fontsize=7, loc="upper left", ncol=3)
         ax.grid(axis="y", alpha=0.2)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha="right", fontsize=8)
 
-    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
-    axes[-1].xaxis.set_major_locator(mdates.YearLocator())
     fig.tight_layout()
-    return fig
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Grafici diagnostici (uno per test × evento × carburante)
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _badge(ax, status: str) -> None:
-    col   = {"OK": _OK, "⚠ WARN": _WARN, "✗ FAIL": _FAIL}.get(status, "#aaa")
-    label = {"OK": "✓  OK", "⚠ WARN": "⚠  WARN", "✗ FAIL": "✗  FAIL"}[status]
-    ax.text(0.98, 0.97, label, transform=ax.transAxes,
-            ha="right", va="top", fontsize=11, fontweight="bold", color="white",
-            bbox=dict(boxstyle="round,pad=0.35", facecolor=col, edgecolor="none"), zorder=10)
-
-
-def _base_title(ev: dict, fuel_key: str, test_label: str) -> str:
-    return f"{test_label}  —  {ev['label']}  ·  {fuel_key.capitalize()}  [margine]"
-
-
-def plot_one_stationarity(win, ev, fuel_key, fcolor, res):
-    fig, ax = plt.subplots(figsize=(9, 4))
-    shock = ev["shock"]
-    ax.fill_between(win.index, win.values, alpha=0.15, color=fcolor)
-    ax.plot(win.index, win.values, color=fcolor, lw=1.2)
-    ax.axhline(0, color="black", lw=0.6)
-    ax.axvline(shock, color=ev["color"], lw=2, ls="--")
-    ax.axvspan(win.index.min(), shock, alpha=0.04, color="steelblue")
-    ax.axvspan(shock, win.index.max(), alpha=0.04, color="tomato")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
-    ax.set_ylabel("Margine (€/L)", fontsize=10)
-    ax.grid(axis="y", alpha=0.25)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    adf_ok  = "✓" if res["adf_p"]  < ALPHA else "✗"
-    kpss_ok = "✓" if res["kpss_p"] > ALPHA else "✗"
-    ax.text(0.02, 0.05,
-            f"ADF   p = {res['adf_p']:.3f}  {adf_ok}   (rifiutare H₀ = stazionario)\n"
-            f"KPSS  p = {res['kpss_p']:.3f}  {kpss_ok}   (non rifiutare H₀ = stazionario)",
-            transform=ax.transAxes, fontsize=9, va="bottom", family="monospace",
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))
-    ax.set_title(_base_title(ev, fuel_key, "Stazionarietà — ADF + KPSS"), fontsize=11, fontweight="bold")
-    _badge(ax, res["status"])
-    fig.tight_layout()
-    return fig
-
-
-def plot_one_autocorrelation(win, ev, fuel_key, fcolor, res):
-    from statsmodels.graphics.tsaplots import plot_acf
-    diff = win.diff().dropna()
-    fig, ax = plt.subplots(figsize=(9, 4))
-    try:
-        plot_acf(diff, lags=25, ax=ax, color=fcolor, alpha=0.05, zero=False, title="")
-    except Exception:
-        ax.text(0.5, 0.5, "n.d.", ha="center", va="center", transform=ax.transAxes)
-    ax.set_xlabel("Lag (giorni)", fontsize=10)
-    ax.set_ylabel("ACF", fontsize=10)
-    ax.grid(axis="y", alpha=0.25)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    lb_vals = list(res["lb"].values())
-    ax.text(0.02, 0.05,
-            f"φ AR(1)  = {res['phi']:.3f}      n_eff = {res['n_eff']} / {res['n']}\n"
-            f"Ljung-Box p (lag 5, 10, 20) = {lb_vals[0]},  {lb_vals[1]},  {lb_vals[2]}",
-            transform=ax.transAxes, fontsize=9, va="bottom", family="monospace",
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))
-    ax.set_title(_base_title(ev, fuel_key, "Autocorrelazione — ACF prime differenze"), fontsize=11, fontweight="bold")
-    _badge(ax, res["status"])
-    fig.tight_layout()
-    return fig
-
-
-def plot_one_normality(win, ev, fuel_key, fcolor, res):
-    diff = win.diff().dropna()
-    fig, ax = plt.subplots(figsize=(6, 5))
-    (osm, osr), (slope, intercept, _) = stats.probplot(diff, dist="norm")
-
-    # ── Intervallo di confidenza puntuale al 95% (formula asintotica) ──────────
-    # Per l'i-esimo order statistic con plotting position p_i = Φ(osm_i):
-    #   Var[x_(i)] ≈ σ² · p_i·(1-p_i) / (n · φ(z_i)²)
-    # CI su asse y: (slope·z_i + intercept) ± 1.96 · |slope| · SE_i
-    # dove SE_i = sqrt(p_i·(1-p_i)/n) / φ(z_i)
-    n       = len(diff)
-    pi      = stats.norm.cdf(osm)                        # plotting positions
-    phi_i   = stats.norm.pdf(osm)                        # densità nei quantili teorici
-    phi_i   = np.where(phi_i < 1e-10, 1e-10, phi_i)     # evita divisione per zero
-    se      = np.sqrt(pi * (1 - pi) / n) / phi_i
-    ci_lo   = slope * osm + intercept - 1.96 * abs(slope) * se
-    ci_hi   = slope * osm + intercept + 1.96 * abs(slope) * se
-
-    ax.fill_between(osm, ci_lo, ci_hi, color="red", alpha=0.12, label="IC 95%")
-    ax.scatter(osm, osr, s=10, color=fcolor, alpha=0.65, rasterized=True, zorder=3)
-    xlim = np.array([min(osm), max(osm)])
-    ax.plot(xlim, slope * xlim + intercept, color="red", lw=1.5, ls="--", label="Normale teorica")
-    ax.set_xlabel("Quantili N(0,1)", fontsize=10)
-    ax.set_ylabel("Quantili campionari (Δmargine)", fontsize=10)
-    ax.legend(fontsize=9)
-    ax.grid(alpha=0.25)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    sw_str = f"SW   p = {res['sw_p']:.3f}" if not np.isnan(res.get("sw_p", np.nan)) else "SW   n.d."
-    ax.text(0.02, 0.97,
-            f"{sw_str}\n"
-            f"JB   p = {res['jb_p']:.3f}\n"
-            f"skew  = {res['skew']:.2f}   kurt_exc = {res['kurt_excess']:.2f}",
-            transform=ax.transAxes, fontsize=9, va="top", family="monospace",
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))
-    ax.set_title(_base_title(ev, fuel_key, "Normalità — QQ plot"), fontsize=11, fontweight="bold")
-    _badge(ax, res["status"])
-    fig.tight_layout()
-    return fig
-
-
-def plot_one_homoscedasticity(win, ev, fuel_key, fcolor, res):
-    fig, ax = plt.subplots(figsize=(9, 4))
-    shock = ev["shock"]
-    roll_std = win.rolling(14, min_periods=7).std()
-    ax.fill_between(roll_std.index, roll_std.values, alpha=0.2, color=fcolor)
-    ax.plot(roll_std.index, roll_std.values, color=fcolor, lw=1.5)
-    ax.axvline(shock, color=ev["color"], lw=2, ls="--")
-    pre_idx  = win.index[win.index < shock]
-    post_idx = win.index[win.index >= shock]
-    if len(pre_idx) and len(post_idx) and not np.isnan(res["std_pre"]):
-        ax.hlines(res["std_pre"],  pre_idx.min(),  pre_idx.max(),
-                  colors="steelblue", lw=1.5, ls=":", label=f"σ pre = {res['std_pre']:.4f}")
-        ax.hlines(res["std_post"], post_idx.min(), post_idx.max(),
-                  colors="tomato",   lw=1.5, ls=":", label=f"σ post = {res['std_post']:.4f}")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
-    ax.set_ylabel("σ rolling 14gg  (€/L)", fontsize=10)
-    ax.legend(fontsize=9, loc="upper left")
-    ax.grid(axis="y", alpha=0.25)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.text(0.98, 0.05,
-            f"Levene  p = {res['lev_p']:.3f}\n"
-            f"ratio σ post/pre = {res.get('ratio', float('nan')):.2f}×",
-            transform=ax.transAxes, fontsize=9, va="bottom", ha="right", family="monospace",
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))
-    ax.set_title(_base_title(ev, fuel_key, "Omoschedasticità — volatilità rolling + Levene"), fontsize=11, fontweight="bold")
-    _badge(ax, res["status"])
-    fig.tight_layout()
-    return fig
-
-
-def plot_one_arch(win, ev, fuel_key, fcolor, res):
-    fig, ax = plt.subplots(figsize=(9, 4))
-    shock = ev["shock"]
-    diff2 = win.diff().dropna() ** 2
-    ax.fill_between(diff2.index, diff2.values, alpha=0.35, color=fcolor)
-    ax.plot(diff2.index, diff2.values, color=fcolor, lw=0.8)
-    ax.axvline(shock, color=ev["color"], lw=2, ls="--")
-    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
-    ax.set_ylabel("(Δmargine)²", fontsize=10)
-    ax.grid(axis="y", alpha=0.25)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.text(0.02, 0.97,
-            f"ARCH-LM  p = {res['lm_p']:.3f}\n"
-            f"F-stat     = {res['f_stat']:.2f}",
-            transform=ax.transAxes, fontsize=9, va="top", family="monospace",
-            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))
-    ax.set_title(_base_title(ev, fuel_key, "Effetti ARCH — (Δmargine)²"), fontsize=11, fontweight="bold")
-    _badge(ax, res["status"])
-    fig.tight_layout()
-    return fig
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Export CSV
-# ══════════════════════════════════════════════════════════════════════════════
-
-def export_csv(all_results: dict) -> None:
-    rows_summary, rows_stat = [], {k: [] for k in
-        ("stationarity","autocorrelation","normality","homoscedasticity","arch")}
-
-    for ev_name, ev in EVENTS.items():
-        for fuel_key, res_all in all_results.get(ev_name, {}).items():
-            base = {"evento": ev_name, "shock": ev["shock"].date(), "carburante": fuel_key}
-            for test_it, test_key in [
-                ("Stazionarietà","stationarity"), ("Autocorrelazione","autocorrelation"),
-                ("Normalità","normality"), ("Omoschedasticità","homoscedasticity"),
-                ("Effetti ARCH","arch"),
-            ]:
-                res = res_all[test_key]
-                rows_summary.append({**base, "test": test_it,
-                                     "status": res["status"], "dettaglio": res["detail"]})
-
-            r = res_all["stationarity"]
-            rows_stat["stationarity"].append({**base, "status": r["status"],
-                "adf_stat": round(r["adf_p"],4), "adf_p": round(r["adf_p"],4),
-                "adf_ok": r["adf_p"] < ALPHA,
-                "kpss_stat": round(r["kpss_stat"],4), "kpss_p": round(r["kpss_p"],4),
-                "kpss_ok": r["kpss_p"] > ALPHA})
-
-            r = res_all["autocorrelation"]
-            lb = r["lb"]; lb_keys = list(lb.keys())
-            rows_stat["autocorrelation"].append({**base, "status": r["status"],
-                "phi_ar1": round(r["phi"],4), "n": r["n"], "n_eff": r["n_eff"],
-                **{f"lb_p_lag{k}": lb[k] for k in lb_keys}, "lb_violazione": r["lb_fail"]})
-
-            r = res_all["normality"]
-            rows_stat["normality"].append({**base, "status": r["status"],
-                "sw_stat": round(r["sw_stat"],4) if not np.isnan(r["sw_stat"]) else "",
-                "sw_p":    round(r["sw_p"],4)    if not np.isnan(r["sw_p"])    else "",
-                "jb_stat": round(r["jb_stat"],4), "jb_p": round(r["jb_p"],4),
-                "skewness": round(r["skew"],4), "kurtosis_exc": round(r["kurt_excess"],4)})
-
-            r = res_all["homoscedasticity"]
-            rows_stat["homoscedasticity"].append({**base, "status": r["status"],
-                "lev_stat":  round(r["lev_stat"],4)  if not np.isnan(r["lev_stat"])  else "",
-                "lev_p":     round(r["lev_p"],4)     if not np.isnan(r["lev_p"])     else "",
-                "sigma_pre": round(r["std_pre"],6)   if not np.isnan(r["std_pre"])   else "",
-                "sigma_post":round(r["std_post"],6)  if not np.isnan(r["std_post"])  else "",
-                "ratio_post_pre": round(r.get("ratio",float("nan")),3)
-                                  if not np.isnan(r.get("ratio",float("nan"))) else ""})
-
-            r = res_all["arch"]
-            rows_stat["arch"].append({**base, "status": r["status"],
-                "lm_stat": round(r["lm_stat"],4) if not np.isnan(r["lm_stat"]) else "",
-                "lm_p":    round(r["lm_p"],4)    if not np.isnan(r["lm_p"])    else "",
-                "f_stat":  round(r["f_stat"],4)  if not np.isnan(r["f_stat"])  else "",
-                "f_p":     round(r["f_p"],4)     if not np.isnan(r["f_p"])     else ""})
-
-    pd.DataFrame(rows_summary).to_csv(OUT_DIR / "risultati_riepilogo.csv",
-                                       index=False, encoding="utf-8-sig")
-    print("  CSV: risultati_riepilogo.csv")
-    for key, fname in [
-        ("stationarity","risultati_stazionarieta.csv"),
-        ("autocorrelation","risultati_autocorrelazione.csv"),
-        ("normality","risultati_normalita.csv"),
-        ("homoscedasticity","risultati_omoschedasticita.csv"),
-        ("arch","risultati_arch.csv"),
-    ]:
-        pd.DataFrame(rows_stat[key]).to_csv(OUT_DIR / fname, index=False, encoding="utf-8-sig")
-        print(f"  CSV: {fname}")
+    out = out_dir / "00_margine_serie_storica_globale.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  → Salvato: {out}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════════════════════════════════════
-
 def main() -> None:
-    print("Carico dati...")
+    # ── Carica dati pompa ─────────────────────────────────────────────────────
     daily = (pd.read_csv(DAILY_CSV, parse_dates=["date"])
                .sort_values("date").set_index("date"))
 
+    # ── Carica futures e costruisce il margine ────────────────────────────────
+    print("Carico futures e EUR/USD...")
     eurusd = load_eurusd(
         csv_path=EURUSD_CSV if EURUSD_CSV.exists() else None,
         start="2015-01-01", end="2026-12-31"
     )
-
     gasoil_eurl  = load_futures_eurl(GASOIL_CSV, GAS_OIL, eurusd)
     eurobob_eurl = load_futures_b7h1(EUROBOB_CSV, EUROBOB_HC, eurusd) \
                    if EUROBOB_CSV.exists() else None
 
-    margin = build_margin(daily, gasoil_eurl, eurobob_eurl)
+    daily = build_margin(daily, gasoil_eurl, eurobob_eurl)
 
-    # Disponibilità benzina
-    benz_avail = margin["margin_benzina"].dropna()
+    print(f"\nDati margine: {daily.index.min().date()} → {daily.index.max().date()}")
+    benz_avail = daily["margin_benzina"].dropna()
     if not benz_avail.empty:
-        print(f"  Margine benzina disponibile: {benz_avail.index.min().date()} → {benz_avail.index.max().date()}")
-    else:
-        print("  Margine benzina: Eurobob non disponibile")
-    print(f"  Margine gasolio disponibile: {margin['margin_gasolio'].dropna().index.min().date()} → "
-          f"{margin['margin_gasolio'].dropna().index.max().date()}")
+        print(f"  margin_benzina: {benz_avail.index.min().date()} → {benz_avail.index.max().date()}")
+    print(f"  margin_gasolio: {daily['margin_gasolio'].dropna().index.min().date()} → "
+          f"{daily['margin_gasolio'].dropna().index.max().date()}")
+    print(f"\nConfigurazione: HALF_WIN={HALF_WIN}g  SEARCH=±{SEARCH}g  STEP={STEP}g")
+    print(f"Nota CLT: con HALF_WIN={HALF_WIN} e φ≈0.3 → n_eff≈{int(HALF_WIN*0.54)} "
+          f"({'OK' if int(HALF_WIN*0.54)>=30 else 'approssimato, considera HALF_WIN≥60'})\n")
 
-    # ── Grafico 0: serie storica del margine ──────────────────────────────────
-    print("\nGrafico 0: serie storica margine...")
-    fig0 = plot_margin_series(margin)
-    out0 = OUT_DIR / "00_margine_serie_storica.png"
-    fig0.savefig(out0, dpi=150, bbox_inches="tight")
-    plt.close(fig0)
-    print(f"  ✓ {out0.name}")
-
-    # ── Diagnostiche per evento × carburante ──────────────────────────────────
-    fuel_margin_col = {"gasolio": "margin_gasolio", "benzina": "margin_benzina"}
-    fuel_color_map  = {"gasolio": "#1D3557", "benzina": "#E63946"}
+    # ── Grafico 0: serie storica completa + PELT globale ─────────────────────
+    print("Grafico 0: margine completo con change point globali (PELT)...")
+    _plot_global_margins(daily, OUT_DIR)
 
     all_results: dict = {}
+
     for ev_name, ev in EVENTS.items():
         shock = ev["shock"]
-        print(f"\n{'═'*72}")
-        print(f"  {ev_name}  (shock={shock.date()})")
-        print(f"{'═'*72}")
-        all_results[ev_name] = {}
 
-        for fuel_key, margin_col in fuel_margin_col.items():
-            win = margin[margin_col][
-                (margin.index >= ev["pre_start"]) &
-                (margin.index <= ev["post_end"])
-            ].dropna()
-            if len(win) < 20:
-                print(f"  [{fuel_key}] dati insufficienti (n={len(win)}) — salto.")
+        available = daily[(daily.index >= ev["pre_start"]) &
+                          (daily.index <= ev["post_end"])]
+        if available.empty:
+            print(f"⚠  {ev_name}: nessun dato disponibile, salto.")
+            continue
+
+        print(f"{'═'*70}")
+        print(f"  EVENTO: {ev_name}  (shock={shock.date()})")
+        print(f"  Finestra: {ev['pre_start'].date()} → {ev['post_end'].date()}")
+        print(f"{'═'*70}")
+
+        fig = plt.figure(figsize=(18, 14))
+        fig.suptitle(
+            f"Change-point detection sul MARGINE – {ev_name}\n"
+            f"Shock: {ev['label'].replace(chr(10), ' ')}",
+            fontsize=13, fontweight="bold"
+        )
+
+        gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.55, wspace=0.30)
+
+        ev_results: dict = {}
+
+        for col_idx, (fuel_key, (col_name, fuel_color)) in enumerate(FUELS.items()):
+            if col_name not in daily.columns:
+                print(f"  Colonna {col_name} non trovata, salto.")
                 continue
-            all_results[ev_name][fuel_key] = run_diagnostics(win, shock, fuel_key)
 
-    # ── 30 grafici diagnostici ────────────────────────────────────────────────
-    TEST_PLOT_FNS = [
-        ("01_stazionarieta",    "stationarity",    plot_one_stationarity),
-        ("02_autocorrelazione", "autocorrelation", plot_one_autocorrelation),
-        ("03_normalita",        "normality",        plot_one_normality),
-        ("04_omoschedasticita", "homoscedasticity", plot_one_homoscedasticity),
-        ("05_arch",             "arch",             plot_one_arch),
-    ]
+            series = daily[col_name].dropna()
 
-    print(f"\n{'═'*72}")
-    print("Generazione grafici diagnostici...")
-    count = 0
-    for ev_name, ev in EVENTS.items():
-        ev_slug = (ev_name.lower()
-                   .replace(" ", "_").replace("(","").replace(")","")
-                   .replace("/","").replace("-","_"))
-        for fuel_key in ("gasolio", "benzina"):
-            if fuel_key not in all_results.get(ev_name, {}):
+            # Benzina: salta evento se non ci sono dati nel range
+            win_check = series[(series.index >= ev["pre_start"]) &
+                               (series.index <= ev["post_end"])]
+            if len(win_check) < 2 * HALF_WIN:
+                print(f"  [{fuel_key}] dati insufficienti nel range "
+                      f"(n={len(win_check)}), salto.")
                 continue
-            res_all = all_results[ev_name][fuel_key]
-            fcolor  = fuel_color_map[fuel_key]
-            win = margin[fuel_margin_col[fuel_key]][
-                (margin.index >= ev["pre_start"]) &
-                (margin.index <= ev["post_end"])
-            ].dropna()
 
-            for prefix, test_key, fn in TEST_PLOT_FNS:
-                fig = fn(win, ev, fuel_key, fcolor, res_all[test_key])
-                out = OUT_DIR / f"{prefix}__{ev_slug}__{fuel_key}.png"
-                fig.savefig(out, dpi=150, bbox_inches="tight")
-                plt.close(fig)
-                print(f"  ✓ {out.name}")
-                count += 1
+            ax_price = fig.add_subplot(gs[0, col_idx])
+            ax_cusum = fig.add_subplot(gs[1, col_idx])
+            ax_tstat = fig.add_subplot(gs[2, col_idx])
+            ax_bic   = fig.add_subplot(gs[3, col_idx])
 
-    # ── CSV + README ──────────────────────────────────────────────────────────
-    print(f"\n{'═'*72}")
-    export_csv(all_results)
-    print(f"\nDone. {count} grafici diagnostici + serie storica + CSV in: {OUT_DIR}")
+            ax_price.set_title(
+                f"{fuel_key.capitalize()} – {ev['label'].replace(chr(10),' ')}",
+                fontsize=9, fontweight="bold", pad=4
+            )
+
+            res = plot_event_fuel(
+                ev_name, ev, series,
+                fuel_label=fuel_key.capitalize(),
+                fuel_color=fuel_color,
+                ax_price=ax_price,
+                ax_cusum=ax_cusum,
+                ax_tstat=ax_tstat,
+                ax_bic=ax_bic,
+            )
+            ev_results[fuel_key] = res
+
+            if res:
+                print(f"\n  [{fuel_key.upper()}]")
+                print(f"    L1 τ={res['L1_tau'].date()}  Δ={res['L1_delta']:+.4f} €/L"
+                      f"  p_bh={res['L1_p_bh']:.3f}  [BH-FDR]"
+                      f"  {'★ significativo' if res['L1_p_bh']<0.05 else '– non sig.'}")
+                print(f"    L2 CUSUM peak = {res['L2_cusum'].date()}")
+                print(f"    L3 BinSeg ({res['L3_best_n']} break ottimale): "
+                      + (", ".join(str(d.date()) for d in res['L3_binseg']) or "nessuno"))
+                print(f"    L4 PELT ({len(res['L4_pelt'])} break): "
+                      + (", ".join(str(d.date()) for d in res['L4_pelt']) or "nessuno"))
+
+        all_results[ev_name] = ev_results
+
+        out = OUT_DIR / f"cp_margin_{ev_name.replace(' ','_').replace('/','')}.png"
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"\n  → Salvato: {out}\n")
+
+    # ── Riepilogo finale ──────────────────────────────────────────────────────
+    print(f"\n{'═'*70}")
+    print("RIEPILOGO CHANGE POINT MARGINE – tutti gli eventi")
+    print(f"{'═'*70}")
+    print(f"{'Evento':<28} {'Carb.':<10} {'L1 τ':<13} {'Δ €/L':>8} "
+          f"{'p_bh':>8} {'L4 PELT break'}")
+    print("-"*80)
+    for ev_name, fuels in all_results.items():
+        for fuel, res in fuels.items():
+            if not res:
+                continue
+            pelt_str = ", ".join(str(d.date()) for d in res["L4_pelt"]) or "—"
+            print(f"{ev_name:<28} {fuel:<10} {str(res['L1_tau'].date()):<13} "
+                  f"{res['L1_delta']:>+8.4f} {res['L1_p_bh']:>8.3f}  {pelt_str}")
 
 
 if __name__ == "__main__":

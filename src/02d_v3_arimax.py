@@ -88,8 +88,8 @@ EURUSD_CSV  = BASE_DIR / "data" / "raw" / "eurusd.csv"
 _OUT_BASE   = BASE_DIR / "data" / "plots" / "its"
 # v3 usa PELT (ruptures RBF) come detection autonoma — non legge theta_results.csv
 
-PRE_WIN   = 30    # giorni pre-T0 per il fit ARIMA
-POST_WIN  = 30    # giorni post-T0 per il counterfactual
+PRE_WIN   = 40    # giorni pre-T0 per il fit ARIMA
+POST_WIN  = 40    # giorni post-T0 per il counterfactual
 CI_ALPHA  = 0.05  # CI al 90%
 SEARCH    = 30    # ricerca PELT ±SEARCH giorni dallo shock (mode=detected)
 
