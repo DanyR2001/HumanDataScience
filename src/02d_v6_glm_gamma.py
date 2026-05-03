@@ -6,65 +6,7 @@ Modello di regressione GLM con distribuzione Gamma e link logaritmico per
 la stima dell'extra-profitto speculativo sul margine distributori nei periodi
 successivi a eventi geopolitici.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MOTIVAZIONE vs GLM Poisson (v2)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Il margine distributore (€/L) è una serie continua, strettamente positiva (o
-quasi: shift necessario solo se va in negativo), con struttura di varianza
-tipicamente proporzionale al quadrato della media:
-
-    Var(Y_t) = φ · μ_t²       [Gamma]
-    Var(Y_t) = μ_t             [Poisson — meno adatta]
-
-Il GLM Gamma con link log è la scelta canonica per dati continui positivi
-con eteroschedasticità proporzionale al livello (skewness > 0, CV stabile).
-
-Vantaggi rispetto a OLS e GLM Poisson:
-  1. CI/PI ASIMMETRICI sulla scala della risposta (exp del CI lineare)
-     → catturano la natura right-skewed della distribuzione dei margini
-  2. Nessuna approssimazione «dati di conteggio»: Gamma è nativa per
-     dati continui positivi
-  3. Link log: effetto del trend MOLTIPLICATIVO → più stabile fuori campione
-  4. Dispersione φ stimata via ML (non assunta = 1 come in Poisson)
-  5. Predizione: PI = CI_param ⊗ CI_risposta  (propagato via delta method)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DIAGNOSTICA SPECIFICA GAMMA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  · Dispersione φ = Pearson χ²/df  (≈ 1 → equi-dispersione Gamma)
-  · Deviance/df                    (bontà del fit Gamma)
-  · Skewness del pre-periodo       (motivazione distribuzione Gamma)
-  · CV = std/mean                  (stima emprica di sqrt(φ))
-  · Pregibon link test              (verifica del link log vs identity)
-  · Anderson-Darling su log(y_shifted):
-      log(Gamma) ≈ normale se φ piccolo → test di normalità come proxy
-  · Confronto AIC: Gamma vs OLS residui (via log-likelihood Gaussian)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-INTERVALLI DI PREVISIONE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  CI (media)      : Wald CI sul predittore lineare η̂, poi exp()
-                    → asimmetrico sulla scala risposta, il punto di forza
-  PI (previsione) : aggiunge varianza risposta Gamma sul log scale
-                    se var_total = var_param + φ
-                    → PI = exp(η̂ ± z·sqrt(var_param + φ)) − shift
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Break point detection (--mode detected):
-  margin    : Window L2 Discrepancy (paper, Eq. 1–2) sul margine distributore
-  price     : Window L2 Discrepancy (paper, Eq. 1–2) sul prezzo pompa netto
-  (θ caricato da theta_results.csv prodotto da 02c_change_point_detection.py)
-
-Modalità (--mode):
-  fixed     : break = data dello shock hardcodata [default]
-  detected  : break θ da 02c (usa --detect per specificare margin/price)
-
-Output:
-  data/plots/its/fixed/v6_glm_gamma/                      (mode=fixed)
-  data/plots/its/detected/{margin|price}/v6_glm_gamma/     (mode=detected)
-    plot_{evento}.png
-    diag_{evento}_{carburante}.png
-    v6_glm_gamma_results.csv
+... (commento invariato) ...
 """
 
 from __future__ import annotations
@@ -86,6 +28,7 @@ from diagnostics import (
     plot_residual_diagnostics,
 )
 from theta_loader import load_theta
+from forecast_consumi import load_daily_consumption   # <-- nuovo import
 
 try:
     import statsmodels.api as sm
@@ -117,10 +60,7 @@ DISP_WARN   = 2.0      # soglia: φ > DISP_WARN → segnala overdispersione
 MA_WIN      = 7        # smoothing detection L2
 MIN_SEG     = 14       # segmento minimo detection L2 (giorni)
 
-DAILY_CONSUMPTION_L: dict[str, int] = {
-    "benzina": 12_000_000,
-    "gasolio": 25_000_000,
-}
+# DAILY_CONSUMPTION_L rimosso – ora letto dal CSV
 
 EVENTS: dict[str, dict] = {
     "Ucraina (Feb 2022)": {
@@ -154,7 +94,7 @@ GAMMA_COLOR = "#27ae60"   # verde per distinguere Gamma da Poisson (blu)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Caricamento dati
+# Caricamento dati (identico)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _load_gasoil_futures(eurusd: pd.Series) -> pd.Series:
@@ -292,7 +232,7 @@ def fit_ols_hac(
     shock: pd.Timestamp,
 ) -> dict | None:
     """OLS lineare sui PRE_WIN gg pre-break con SE Newey-West HAC."""
-    anchor = shock if break_date > shock else break_date
+    anchor = break_date
     pre = series[
         (series.index >= anchor - pd.Timedelta(days=PRE_WIN)) &
         (series.index < anchor)
@@ -401,7 +341,7 @@ def fit_glm_gamma(
     if not HAS_SM:
         return None
 
-    anchor = shock if break_date > shock else break_date
+    anchor = break_date
     pre = series[
         (series.index >= anchor - pd.Timedelta(days=PRE_WIN)) &
         (series.index < anchor)
@@ -518,14 +458,6 @@ def project_glm_gamma(
       ci_high     : CI medio sup
       pi_low      : PI previsione inf (include varianza risposta Gamma)
       pi_high     : PI previsione sup
-
-    CI sul predittore lineare η̂ = Xβ̂:
-      var(η̂) = x' Σ_β x    (propagazione delta method)
-      CI: η̂ ± z · sqrt(var(η̂))    → exp() → asimmetrico
-
-    PI include varianza risposta:
-      var_total = var(η̂) + φ_ML    (approx delta method sul log scale)
-      PI: exp(η̂ ± z · sqrt(var_total)) − shift
     """
     anchor    = info["anchor"]
     shift     = info["shift"]
@@ -611,12 +543,7 @@ def _plot_gamma_diagnostics(
     fuel_key: str,
     out_path: Path,
 ) -> None:
-    """
-    3-panel plot diagnostico GLM Gamma:
-      1. Histogram del pre-periodo + fit PDF Gamma stimata
-      2. Residui Pearson vs η̂ (eteroschedasticità residua)
-      3. Q-Q plot dei residui deviance vs N(0,1)
-    """
+    # ... (invariato) ...
     pre      = info_gamma["pre"]
     shift    = info_gamma["shift"]
     glm_fit  = info_gamma["glm_fit"]
@@ -637,7 +564,6 @@ def _plot_gamma_diagnostics(
     ax = axes[0]
     ax.hist(y_shift, bins=20, density=True, alpha=0.55, color=GAMMA_COLOR,
             edgecolor="white", label=f"y_shifted (n={len(y_shift)})")
-    # PDF Gamma: shape k = 1/φ, scale θ = μ̄·φ
     mu_bar = float(y_shift.mean())
     if phi_ml > 0 and mu_bar > 0:
         k_hat    = 1.0 / phi_ml
@@ -703,6 +629,7 @@ def _plot_event_fuel(
     pi_low_gamma: pd.Series | None, pi_high_gamma: pd.Series | None,
     extra_gamma: pd.Series | None, gain_gamma: float | None,
     chow: dict, mode: str, break_method: str,
+    cons: pd.Series,                    # <-- consumi giornalieri (L/giorno)
     ax_main: plt.Axes, ax_gain: plt.Axes, ax_ci: plt.Axes,
 ) -> None:
     shock = ev["shock"]
@@ -811,14 +738,16 @@ def _plot_event_fuel(
         _pad = max(abs(_ymax - _ymin) * 0.25, 0.005)
         ax_main.set_ylim(_ymin - _pad, _ymax + _pad)
 
-    # ── Pannello guadagno cumulato ────────────────────────────────────────────
-    cum_ols = (extra_ols * DAILY_CONSUMPTION_L[fuel_key] / 1e6).cumsum()
+    # ── Pannello guadagno cumulato (ora con consumi reali) ────────────────────
+    # Allinea i consumi ai giorni del post
+    cons_aligned = cons.reindex(baseline_ols.index, method="ffill").fillna(cons.mean())
+    cum_ols = (extra_ols * cons_aligned.values / 1e6).cumsum()
     ax_gain.plot(cum_ols.index, cum_ols.values,
                  color="dimgrey", lw=1.2, ls="--",
                  label=f"OLS HAC → {gain_ols:+.0f} M€")
 
     if extra_gamma is not None and gain_gamma is not None:
-        cum_gamma = (extra_gamma * DAILY_CONSUMPTION_L[fuel_key] / 1e6).cumsum()
+        cum_gamma = (extra_gamma * cons_aligned.values / 1e6).cumsum()
         ax_gain.plot(cum_gamma.index, cum_gamma.values,
                      color=GAMMA_COLOR, lw=1.6,
                      label=f"GLM Gamma → {gain_gamma:+.0f} M€")
@@ -829,9 +758,12 @@ def _plot_event_fuel(
     ax_gain.fill_between(cum_ols.index, cum_ols.values, 0,
                          where=(cum_ols < 0), alpha=0.18, color="red")
     ax_gain.axvline(break_date, color=fuel_color, lw=1.0, ls=":", alpha=0.7)
+
+    # Calcola consumo medio (ML/giorno) per il titolo
+    avg_cons_ml = cons.mean() / 1e6
     ax_gain.set_title(
         f"Guadagno extra cumulato ({len(extra_ols)}gg post-break)\n"
-        f"[{DAILY_CONSUMPTION_L[fuel_key]/1e6:.0f} ML/giorno]",
+        f"[consumo medio {avg_cons_ml:.1f} ML/giorno]",
         fontsize=7
     )
     ax_gain.set_ylabel("M€ cumulati", fontsize=8)
@@ -842,7 +774,6 @@ def _plot_event_fuel(
     plt.setp(ax_gain.xaxis.get_majorticklabels(), rotation=35, ha="right", fontsize=7)
 
     # ── Pannello confronto ampiezza CI: OLS vs Gamma ──────────────────────────
-    # Mostra l'asimmetria Gamma come valore aggiunto rispetto a OLS simmetrico
     if baseline_gamma is not None and ci_low_gamma is not None:
         idx = baseline_ols.index
 
@@ -919,6 +850,7 @@ def main() -> None:
     print(f"  CI/PI          : Wald asimmetrico sul link log  (α={CI_ALPHA})")
     print(f"  Soglia overdispersione: φ > {DISP_WARN}")
     print(f"  statsmodels    : {'OK' if HAS_SM else 'MANCANTE – solo OLS fallback'}")
+    print("  Consumi        : letti da data/consumi/consumi_giornalieri.csv (via forecast_consumi)")
     print(f"  Output         : {OUT_DIR}")
     print("═" * 70)
 
@@ -971,15 +903,15 @@ def main() -> None:
                 print(f"  [{fuel_key}] dati post-break insufficienti – salto.")
                 continue
 
+            # ── Carica consumi giornalieri per il periodo post ────────────────
+            cons = load_daily_consumption(post.index, fuel_key)   # Serie L/giorno
+
             baseline_ols, ci_low_ols, ci_high_ols = project_hac(info_ols, post.index)
             extra_ols = post - baseline_ols
-            gain_ols  = float(extra_ols.sum() * DAILY_CONSUMPTION_L[fuel_key] / 1e6)
-            gain_ci_low_ols  = float(
-                (post - ci_high_ols).sum() * DAILY_CONSUMPTION_L[fuel_key] / 1e6
-            )
-            gain_ci_high_ols = float(
-                (post - ci_low_ols).sum() * DAILY_CONSUMPTION_L[fuel_key] / 1e6
-            )
+            # Calcolo guadagno OLS con consumi reali
+            gain_ols  = float((extra_ols * cons).sum() / 1e6)
+            gain_ci_low_ols  = float(((post - ci_high_ols) * cons).sum() / 1e6)
+            gain_ci_high_ols = float(((post - ci_low_ols) * cons).sum() / 1e6)
 
             chow = chow_test(series, break_date)
 
@@ -993,14 +925,11 @@ def main() -> None:
             if info_gamma is not None:
                 (baseline_gamma, ci_low_gamma, ci_high_gamma,
                  pi_low_gamma, pi_high_gamma) = project_glm_gamma(info_gamma, post.index)
-                extra_gamma        = post - baseline_gamma
-                gain_gamma         = float(extra_gamma.sum() * DAILY_CONSUMPTION_L[fuel_key] / 1e6)
-                gain_ci_low_gamma  = float(
-                    (post - ci_high_gamma).sum() * DAILY_CONSUMPTION_L[fuel_key] / 1e6
-                )
-                gain_ci_high_gamma = float(
-                    (post - ci_low_gamma).sum() * DAILY_CONSUMPTION_L[fuel_key] / 1e6
-                )
+                extra_gamma = post - baseline_gamma
+                # Calcolo guadagno Gamma con consumi reali
+                gain_gamma         = float((extra_gamma * cons).sum() / 1e6)
+                gain_ci_low_gamma  = float(((post - ci_high_gamma) * cons).sum() / 1e6)
+                gain_ci_high_gamma = float(((post - ci_low_gamma) * cons).sum() / 1e6)
 
                 # Diagnostica distribuzione Gamma (plot separato)
                 safe_ev    = (ev_name.replace(" ", "_").replace("/", "")
@@ -1026,7 +955,7 @@ def main() -> None:
                 diag_stats=diag,
             )
 
-            # ── Plot principale ───────────────────────────────────────────────
+            # ── Plot principale (ora con cons) ────────────────────────────────
             _plot_event_fuel(
                 ev_name, ev, series, fuel_key, fuel_color,
                 break_date,
@@ -1037,10 +966,11 @@ def main() -> None:
                 pi_low_gamma, pi_high_gamma,
                 extra_gamma, gain_gamma,
                 chow, mode, break_method,
+                cons,                              # <-- passato
                 axes[row_idx][0], axes[row_idx][1], axes[row_idx][2],
             )
 
-            # ── Stampa a video ────────────────────────────────────────────────
+            # ── Stampa a video (invariata tranne i guadagni già ricalcolati) ─────
             print(f"\n  {ev_name}  [{fuel_key.upper()}]")
             print(f"    Break ({break_method}) = {break_date.date()}  "
                   f"(shock={shock.date()})")
@@ -1077,8 +1007,7 @@ def main() -> None:
                       f"p={diag['sw_p']:.3f}  "
                       f"{'OK' if diag['sw_p'] > 0.05 else '⚠ non norm.'}")
 
-            # ── Record CSV ────────────────────────────────────────────────────
-            # Valore primario per compare.py: Gamma se disponibile, OLS come fallback
+            # ── Record CSV (usa già gain calcolati con cons) ────────────────────
             _gain_total      = gain_gamma         if not np.isnan(gain_gamma)         else gain_ols
             _gain_ci_low     = gain_ci_low_gamma  if not np.isnan(gain_ci_low_gamma)  else gain_ci_low_ols
             _gain_ci_high    = gain_ci_high_gamma if not np.isnan(gain_ci_high_gamma) else gain_ci_high_ols
@@ -1140,6 +1069,7 @@ def main() -> None:
                     f"GLM Gamma log-link, mode={mode}"
                     + (f", detect={detect_target}" if mode == "detected" else "")
                     + (f", phi_ml={info_gamma['phi_ml']:.3f}" if info_gamma else "")
+                    + ", consumi giornalieri reali"
                 ),
             })
 

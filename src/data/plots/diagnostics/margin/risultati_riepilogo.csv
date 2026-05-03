@@ -1,0 +1,31 @@
+﻿evento,shock,carburante,test,status,dettaglio
+Ucraina (Feb 2022),2022-02-24,gasolio,Stazionarietà,OK,ADF p=0.000 ✓ | KPSS p=0.100 ✓
+Ucraina (Feb 2022),2022-02-24,gasolio,Autocorrelazione,OK,"AR(2) AIC=-571.6 | φ=0.843  n_eff=15/180 | LB-residui p([5, 10, 20])=[0.332, 0.086, 0.066]"
+Ucraina (Feb 2022),2022-02-24,gasolio,Normalità,✗ FAIL,JB p=0.000 ✗ | D'Agostino p=0.000 ✗ | skew=2.40  kurt_exc=25.84
+Ucraina (Feb 2022),2022-02-24,gasolio,Omoschedasticità,✗ FAIL,Fligner p=0.000 ✗HET  Levene p=0.000  σ_pre=0.0139  σ_post=0.1762  ratio=12.66× [Levene unreliable: ARCH presente → usa Fligner]
+Ucraina (Feb 2022),2022-02-24,gasolio,Effetti ARCH,✗ FAIL (volatility clustering),ARCH-LM p=0.014  F=2.40
+Ucraina (Feb 2022),2022-02-24,benzina,Stazionarietà,OK,ADF p=0.000 ✓ | KPSS p=0.100 ✓
+Ucraina (Feb 2022),2022-02-24,benzina,Autocorrelazione,✗ FAIL,"AR(2) AIC=-730.2 | φ=0.865  n_eff=13/180 | LB-residui p([5, 10, 20])=[0.001, 0.009, 0.003]"
+Ucraina (Feb 2022),2022-02-24,benzina,Normalità,✗ FAIL,JB p=0.000 ✗ | D'Agostino p=0.000 ✗ | skew=2.40  kurt_exc=36.98
+Ucraina (Feb 2022),2022-02-24,benzina,Omoschedasticità,✗ FAIL,Fligner p=0.000 ✗HET  Levene p=0.000  σ_pre=0.0113  σ_post=0.1110  ratio=9.81× [Levene unreliable: ARCH presente → usa Fligner]
+Ucraina (Feb 2022),2022-02-24,benzina,Effetti ARCH,✗ FAIL (volatility clustering),ARCH-LM p=0.000  F=3.79
+Iran-Israele (Giu 2025),2025-06-13,gasolio,Stazionarietà,⚠ WARN,ADF p=0.012 ✓ | KPSS p=0.014 ✗
+Iran-Israele (Giu 2025),2025-06-13,gasolio,Autocorrelazione,OK,"AR(1) AIC=-1133.6 | φ=0.895  n_eff=10/185 | LB-residui p([5, 10, 20])=[0.582, 0.418, 0.25]"
+Iran-Israele (Giu 2025),2025-06-13,gasolio,Normalità,✗ FAIL,JB p=0.000 ✗ | D'Agostino p=0.000 ✗ | skew=1.26  kurt_exc=8.96
+Iran-Israele (Giu 2025),2025-06-13,gasolio,Omoschedasticità,✗ FAIL,Fligner p=0.000 ✗HET  Levene p=0.000  σ_pre=0.0161  σ_post=0.0319  ratio=1.98× [Levene unreliable: ARCH presente → usa Fligner]
+Iran-Israele (Giu 2025),2025-06-13,gasolio,Effetti ARCH,✗ FAIL (volatility clustering),ARCH-LM p=0.015  F=2.35
+Iran-Israele (Giu 2025),2025-06-13,benzina,Stazionarietà,OK,ADF p=0.009 ✓ | KPSS p=0.100 ✓
+Iran-Israele (Giu 2025),2025-06-13,benzina,Autocorrelazione,OK,"AR(1) AIC=-1311.5 | φ=0.919  n_eff=7/185 | LB-residui p([5, 10, 20])=[0.163, 0.371, 0.461]"
+Iran-Israele (Giu 2025),2025-06-13,benzina,Normalità,✗ FAIL,JB p=0.000 ✗ | D'Agostino p=0.000 ✗ | skew=-1.00  kurt_exc=14.70
+Iran-Israele (Giu 2025),2025-06-13,benzina,Omoschedasticità,OK,Fligner p=0.715 ✓  Levene p=0.580  σ_pre=0.0103  σ_post=0.0143  ratio=1.40× [Levene unreliable: ARCH presente → usa Fligner]
+Iran-Israele (Giu 2025),2025-06-13,benzina,Effetti ARCH,✗ FAIL (volatility clustering),ARCH-LM p=0.032  F=2.08
+Hormuz (Feb 2026),2026-02-28,gasolio,Stazionarietà,✗ FAIL,ADF p=0.866 ✗ | KPSS p=0.010 ✗
+Hormuz (Feb 2026),2026-02-28,gasolio,Autocorrelazione,✗ FAIL,"AR(1) AIC=-461.7 | φ=0.793  n_eff=14/124 | LB-residui p([5, 10, 20])=[0.004, 0.035, 0.011]"
+Hormuz (Feb 2026),2026-02-28,gasolio,Normalità,✗ FAIL,JB p=0.000 ✗ | D'Agostino p=0.000 ✗ | skew=0.20  kurt_exc=11.56
+Hormuz (Feb 2026),2026-02-28,gasolio,Omoschedasticità,✗ FAIL,Fligner p=0.000 ✗HET  Levene p=0.000  σ_pre=0.0142  σ_post=0.0872  ratio=6.12× [Levene unreliable: ARCH presente → usa Fligner]
+Hormuz (Feb 2026),2026-02-28,gasolio,Effetti ARCH,✗ FAIL (volatility clustering),ARCH-LM p=0.000  F=4.13
+Hormuz (Feb 2026),2026-02-28,benzina,Stazionarietà,⚠ WARN,ADF p=0.060 ✗ | KPSS p=0.100 ✓
+Hormuz (Feb 2026),2026-02-28,benzina,Autocorrelazione,✗ FAIL,"AR(2) AIC=-566.4 | φ=0.725  n_eff=19/124 | LB-residui p([5, 10, 20])=[0.003, 0.004, 0.012]"
+Hormuz (Feb 2026),2026-02-28,benzina,Normalità,✗ FAIL,JB p=0.000 ✗ | D'Agostino p=0.000 ✗ | skew=-0.49  kurt_exc=28.13
+Hormuz (Feb 2026),2026-02-28,benzina,Omoschedasticità,✗ FAIL,Fligner p=0.000 ✗HET  Levene p=0.000  σ_pre=0.0079  σ_post=0.0666  ratio=8.39× [Levene unreliable: ARCH presente → usa Fligner]
+Hormuz (Feb 2026),2026-02-28,benzina,Effetti ARCH,✗ FAIL (volatility clustering),ARCH-LM p=0.000  F=7.24

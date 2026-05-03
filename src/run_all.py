@@ -22,7 +22,7 @@ Pipeline ITS (argomento positivo: v1/v3/v5/v6/cmp o nessuno = tutti):
 
   Metodi attivi (triangolazione):
     v1  — OLS Naïve          (frequentista, baseline)
-    v3  — ARIMAX             (serie temporali, autocorrelazione)
+    v3  — ARIMA             (serie temporali, autocorrelazione)
     v5  — BSTS CausalImpact  (bayesiano, state-space)
     v6  — GLM Gamma          (distribuzione continua positiva, log-link)
 
@@ -59,7 +59,7 @@ BASE_STEPS = [
 # ── Step ITS ─────────────────────────────────────────────────────────────────
 ITS_STEPS = [
     ("v1",  "02d_v1_naive.py",        "ITS Metodo 1 — OLS Naïve"),
-    ("v3",  "02d_v3_arimax.py",       "ITS Metodo 3 — ARIMAX"),
+    ("v3",  "02d_v3_arima.py",       "ITS Metodo 3 — ARIMA"),
     ("v5",  "02d_v5_causalimpact.py", "ITS Metodo 5 — BSTS CausalImpact"),
     ("v6",  "02d_v6_glm_gamma.py",    "ITS Metodo 6 — GLM Gamma log-link"),
     ("cmp", "02d_compare.py",         "ITS Confronto — Metodi"),

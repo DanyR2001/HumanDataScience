@@ -49,6 +49,7 @@ from diagnostics import (
     plot_residual_diagnostics,
 )
 from theta_loader import load_theta
+from forecast_consumi import load_daily_consumption
 
 try:
     import statsmodels.api as _sm
@@ -70,10 +71,6 @@ CI_ALPHA  = 0.05   # livello α → intervallo di previsione al 90%
 
 # SEARCH e MIN_SEG rimossi: la detection è centralizzata in 02c (GLM Poisson)
 
-DAILY_CONSUMPTION_L = {
-    "benzina": 12_000_000,
-    "gasolio": 25_000_000,
-}
 
 EVENTS: dict[str, dict] = {
     "Ucraina (Feb 2022)": {
@@ -156,9 +153,6 @@ def load_margin_data() -> pd.DataFrame:
     return df
 
 
-
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # Metodo 1 – OLS Naïve
 # ══════════════════════════════════════════════════════════════════════════════
@@ -227,6 +221,7 @@ def _plot_event_fuel(
     fit: dict, baseline: pd.Series,
     ci_low: pd.Series, ci_high: pd.Series,
     extra: pd.Series, gain_meur: float,
+    cons: pd.Series,                     # consumo giornaliero (litri)
     ax_main: plt.Axes, ax_gain: plt.Axes,
     break_date: pd.Timestamp, mode: str,
     break_score: float = np.nan,
@@ -274,17 +269,20 @@ def _plot_event_fuel(
     ax_main.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0, interval=2))
     plt.setp(ax_main.xaxis.get_majorticklabels(), rotation=35, ha="right", fontsize=7)
 
-    cum = (extra * DAILY_CONSUMPTION_L[fuel_key] / 1e6).cumsum()
+    # Calcola cumulato usando i consumi giornalieri
+    cum = (extra * cons.values / 1e6).cumsum()
     ax_gain.plot(cum.index, cum.values, color=fuel_color, lw=1.2)
     ax_gain.axhline(0, color="grey", lw=0.7, ls="--")
     ax_gain.fill_between(cum.index, cum.values, 0,
                          where=(cum >= 0), alpha=0.25, color="green")
     ax_gain.fill_between(cum.index, cum.values, 0,
                          where=(cum < 0), alpha=0.25, color="red")
+    # Calcola consumo medio per l'annotazione
+    avg_cons_ml = cons.mean() / 1e6
     ax_gain.set_title(
         f"Guadagno extra cumulato → {gain_meur:+.0f} M€  "
         f"({len(extra)}gg post-break)\n"
-        f"[{DAILY_CONSUMPTION_L[fuel_key]/1e6:.0f} ML/giorno]",
+        f"[consumo medio {avg_cons_ml:.1f} ML/giorno]",
         fontsize=7
     )
     ax_gain.set_ylabel("M€ cumulati", fontsize=8)
@@ -388,15 +386,14 @@ def main() -> None:
 
             baseline, ci_low, ci_high = _project_ols(fit, post_data.index)
             extra     = post_data - baseline
-            gain_meur = float(extra.sum() * DAILY_CONSUMPTION_L[fuel_key] / 1e6)
-            gain_ci_low  = float((post_data - ci_high).sum()
-                                 * DAILY_CONSUMPTION_L[fuel_key] / 1e6)
-            gain_ci_high = float((post_data - ci_low).sum()
-                                 * DAILY_CONSUMPTION_L[fuel_key] / 1e6)
+            cons      = load_daily_consumption(post_data.index, fuel_key)
+            gain_meur = float((extra * cons).sum() / 1e6)
+            gain_ci_low  = float(((post_data - ci_high) * cons).sum() / 1e6)
+            gain_ci_high = float(((post_data - ci_low) * cons).sum() / 1e6)
 
             _plot_event_fuel(
                 ev_name, ev, series, fuel_key, fuel_color,
-                fit, baseline, ci_low, ci_high, extra, gain_meur,
+                fit, baseline, ci_low, ci_high, extra, gain_meur, cons,
                 axes[row_idx][0], axes[row_idx][1],
                 break_date=break_date, mode=mode, break_score=break_score,
             )
@@ -460,6 +457,7 @@ def main() -> None:
                 "post_win_days":     POST_WIN,
                 "n_pre":             len(pre_data),
                 "n_post":            len(post_data),
+                "pre_std_eurl":      round(float(pre_data.std(ddof=1)), 6),
                 "extra_mean_eurl":   round(float(extra.mean()), 5),
                 "extra_sum_eurl":    round(float(extra.sum()), 4),
                 "gain_total_meur":   round(gain_meur, 1),

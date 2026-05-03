@@ -20,6 +20,7 @@ Differenze chiave rispetto a v1–v4:
     (es. margin_gasolio come covariate per benzina e viceversa)
   ✓ Distribuzione assunta: Gaussiana sul modello latente BSTS
     (robustezza diversa da OLS, ARIMA, Gamma)
+  ✓ Consumi giornalieri reali da data/consumi/consumi_giornalieri.csv
 
 Dipendenze:
   pip install causalimpact     # wrapper Python di Google CausalImpact (TFP)
@@ -78,6 +79,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent / "utils"))
 from conversions import GAS_OIL, EUROBOB as EUROBOB_HC, load_eurusd, usd_ton_to_eur_liter
 from theta_loader import load_theta
+from forecast_consumi import load_daily_consumption   # <-- nuova importazione
 
 try:
     from causalimpact import CausalImpact
@@ -97,10 +99,7 @@ PRE_WIN  = 40    # giorni pre-SHOCK per stimare la baseline BSTS
 POST_WIN = 40    # giorni post-break per misurare l'extra profitto
 CI_ALPHA = 0.05  # livello α → credible interval al 95%
 
-DAILY_CONSUMPTION_L: dict[str, int] = {
-    "benzina": 12_000_000,
-    "gasolio": 25_000_000,
-}
+# DAILY_CONSUMPTION_L rimosso – ora letto dal CSV
 
 EVENTS: dict[str, dict] = {
     "Ucraina (Feb 2022)": {
@@ -263,23 +262,34 @@ def _run_causal_impact(
             exog_pre  = cov_full.reindex(y_pre.index).values.reshape(-1, 1)
             exog_post = cov_full.reindex(y_post.index).values.reshape(-1, 1)
 
-    # ── Fit UCM sul pre-periodo (prova local linear trend, fallback local level)
+    # ── Fit UCM sul pre-periodo ───────────────────────────────────────────────
+    # Proviamo più metodi di ottimizzazione per evitare ConvergenceWarning:
+    # lbfgs (veloce ma può non convergere su serie piatte) → powell → nm (Nelder-Mead)
     res = None
     for spec in ("local linear trend", "local level"):
-        try:
-            mod = UnobservedComponents(y_pre.values, level=spec, exog=exog_pre)
-            res = mod.fit(disp=False, maxiter=300, method="lbfgs",
-                          optim_complex_step=True)
+        for opt_method in ("lbfgs", "powell", "nm"):
+            try:
+                import warnings as _warnings
+                mod = UnobservedComponents(y_pre.values, level=spec, exog=exog_pre)
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore")
+                    _r = mod.fit(disp=False, maxiter=500, method=opt_method,
+                                 optim_complex_step=(opt_method == "lbfgs"))
+                # accettiamo solo se la log-likelihood è finita
+                if np.isfinite(_r.llf):
+                    res = _r
+                    break
+            except Exception:
+                pass
+        if res is not None:
             break
-        except Exception as exc:
-            print(f"  ⚠  UCM [{spec}] fit error: {exc}")
 
     if res is None:
         return None
 
     # ── Forecast post-periodo ─────────────────────────────────────────────────
     try:
-        fcast    = res.get_forecast(steps=n_post, exog=exog_post)
+        fcast     = res.get_forecast(steps=n_post, exog=exog_post)
         pred_mean = np.asarray(fcast.predicted_mean).ravel()
         pred_ci   = fcast.conf_int(alpha=alpha)
         if hasattr(pred_ci, "iloc"):        # DataFrame (statsmodels ≥ 0.14)
@@ -346,6 +356,7 @@ def _plot_event_fuel(
     break_date: pd.Timestamp,
     mode: str,
     covariate_label: str,
+    cons: pd.Series,               # <-- consumi giornalieri (litri/giorno)
     ax_main: plt.Axes,
     ax_gain: plt.Axes,
 ) -> float:
@@ -416,11 +427,20 @@ def _plot_event_fuel(
     ax_main.xaxis.set_major_locator(mdates.WeekdayLocator(byweekday=0, interval=2))
     plt.setp(ax_main.xaxis.get_majorticklabels(), rotation=35, ha="right", fontsize=7)
 
-    # ── ax_gain (guadagno cumulato) ───────────────────────────────────────────
-    # Ricalcola usando point_effect nel post-periodo
+    # ── ax_gain (guadagno cumulato) – usando consumi reali ────────────────────
+    # point_effect = actual − counterfactual (€/L)
     pe = inf["point_effect"]
-    post_pe = pe[pe.index >= break_date]
-    cum = (post_pe * DAILY_CONSUMPTION_L[fuel_key] / 1e6).cumsum()
+    post_pe = pe[pe.index >= break_date]   # Series allineata ai giorni post-break
+
+    # Allinea i consumi alle stesse date (cons è già una Series con indice date)
+    cons_aligned = cons.reindex(post_pe.index, method="ffill")
+    if cons_aligned.isna().any():
+        # Se mancano giorni, usiamo ffill (valore precedente)
+        cons_aligned = cons_aligned.fillna(method="ffill").fillna(cons.mean())
+
+    # Guadagno giornaliero in M€ = (€/L) * (L/giorno) / 1e6
+    daily_gain_meur = (post_pe * cons_aligned) / 1e6
+    cum = daily_gain_meur.cumsum()
     gain_meur = float(cum.iloc[-1]) if len(cum) > 0 else 0.0
 
     # CI cumulato
@@ -428,8 +448,10 @@ def _plot_event_fuel(
     pe_hi = inf["point_effect_upper"]
     post_lo = pe_lo[pe_lo.index >= break_date]
     post_hi = pe_hi[pe_hi.index >= break_date]
-    cum_lo  = (post_lo * DAILY_CONSUMPTION_L[fuel_key] / 1e6).cumsum()
-    cum_hi  = (post_hi * DAILY_CONSUMPTION_L[fuel_key] / 1e6).cumsum()
+    daily_lo = (post_lo * cons_aligned) / 1e6
+    daily_hi = (post_hi * cons_aligned) / 1e6
+    cum_lo = daily_lo.cumsum()
+    cum_hi = daily_hi.cumsum()
 
     ax_gain.plot(cum.index, cum.values, color=fuel_color, lw=1.2)
     ax_gain.fill_between(cum.index, cum_lo.values, cum_hi.values,
@@ -443,11 +465,12 @@ def _plot_event_fuel(
 
     gain_lo = float(cum_lo.iloc[-1]) if len(cum_lo) > 0 else 0.0
     gain_hi = float(cum_hi.iloc[-1]) if len(cum_hi) > 0 else 0.0
+    avg_cons_ml = cons.mean() / 1e6
     ax_gain.set_title(
         f"Guadagno extra cumulato → {gain_meur:+.0f} M€  "
         f"({len(post_pe)}gg post-break)\n"
         f"CI95% [{gain_lo:+.0f}, {gain_hi:+.0f}] M€  "
-        f"[{DAILY_CONSUMPTION_L[fuel_key]/1e6:.0f} ML/giorno]",
+        f"[consumo medio {avg_cons_ml:.1f} ML/giorno]",
         fontsize=7,
     )
     ax_gain.set_ylabel("M€ cumulati", fontsize=8)
@@ -486,8 +509,6 @@ def _plot_bsts_diagnostics(
 
     # ── 1. Serie + controfattuale ─────────────────────────────────────────────
     ax = axes[0]
-    ax = axes[0]
-    # causalimpact 0.2.x: actual è in inf["response"], controfattuale in inf["point_pred"]
     actual = inf["response"]
     ax.plot(actual.index, actual.values, color=fuel_color, lw=1.0,
             label="Effettivo")
@@ -520,10 +541,9 @@ def _plot_bsts_diagnostics(
     ax.set_ylabel("Effetto puntuale (€/L)", fontsize=8)
     ax.grid(axis="y", alpha=0.20)
 
-    # ── 3. Effetto cumulato ───────────────────────────────────────────────────
+    # ── 3. Effetto cumulato (€/L cumulati, senza consumi) ────────────────────
     ax = axes[2]
     post_mask = inf.index >= break_date
-    # 0.2.x: cum_effect è cumulato dall'inizio (0 nel pre), già filtrato al post
     cum    = inf.loc[post_mask, "cum_effect"]
     cum_lo = inf.loc[post_mask, "cum_effect_lower"]
     cum_hi = inf.loc[post_mask, "cum_effect_upper"]
@@ -585,6 +605,7 @@ def main() -> None:
         print(f"  Detection su: {'MARGINE distributore' if detect_target == 'margin' else 'PREZZO POMPA NETTO'}")
     print(f"  Baseline: PRE_WIN={PRE_WIN}gg prima del break (coerente con v1–v4)")
     print(f"  Post:     POST_WIN={POST_WIN}gg dal break point")
+    print("  Consumi:  letti da data/consumi/consumi_giornalieri.csv (via forecast_consumi)")
     print(f"  Output:   {OUT_DIR}")
     print("  Ref: Brodersen et al. (2015), Ann. Appl. Stat., 9(1), 247–274")
     print("═"*70)
@@ -653,11 +674,22 @@ def main() -> None:
                             ha="center", va="center", transform=ax.transAxes)
                 continue
 
-            # ── Plot principale ───────────────────────────────────────────────
+            # ── Carica consumi giornalieri per il periodo post-break ──────────
+            # Determiniamo l'indice delle date post-break dalla finestra usata da CausalImpact
+            inf = ci_result.inferences
+            post_dates = inf.index[inf.index >= break_date]
+            if len(post_dates) == 0:
+                # fallback: usa la finestra standard
+                post_start = break_date
+                post_end   = break_date + pd.Timedelta(days=POST_WIN)
+                post_dates = pd.date_range(post_start, post_end, freq="D")
+            cons = load_daily_consumption(post_dates, fuel_key)
+
+            # ── Plot principale – passiamo cons ───────────────────────────────
             gain_meur = _plot_event_fuel(
                 ev_name, ev, series,
                 fuel_key, fuel_color, ci_result,
-                shock, break_date, mode, covariate_label,
+                shock, break_date, mode, covariate_label, cons,
                 axes[row_idx][0], axes[row_idx][1],
             )
 
@@ -669,7 +701,6 @@ def main() -> None:
                                    break_date, mode, diag_out)
 
             # ── Statistiche summary (calcolo manuale da inferences 0.2.x) ──────
-            inf       = ci_result.inferences
             post_mask = inf.index >= break_date
             n_post    = post_mask.sum()
             post_inf  = inf.loc[post_mask]
@@ -685,15 +716,31 @@ def main() -> None:
             mean_pred   = float(post_inf["point_pred"].mean())
             rel_eff     = (abs_eff_avg / mean_pred) if mean_pred != 0 else 0.0
 
-            # p-value: approssimazione normale (identica a summary() di causalimpact)
+            # p-value bayesiano: probabilità di coda sul EFFETTO CUMULATIVO
+            # (non sul livello della previsione, che era sempre positivo → p≈0 → prob≈100%)
             from scipy import stats as _st
-            mean_upper = float(post_inf["point_pred_upper"].mean())
-            std_pred   = (mean_upper - mean_pred) / 1.96
-            p_val      = float(_st.norm.cdf((0 - mean_pred) / std_pred)) if std_pred > 0 else 0.5
+            post_mask_pv = inf.index >= break_date
+            cum_eff    = float(inf.loc[post_mask_pv, "point_effect"].sum())
+            cum_eff_lo = float(inf.loc[post_mask_pv, "point_effect_lower"].sum())
+            cum_eff_hi = float(inf.loc[post_mask_pv, "point_effect_upper"].sum())
+            cum_range  = cum_eff_hi - cum_eff_lo
+            # Stima std dell'effetto cumulativo dall'ampiezza del CI
+            cum_std = (cum_range / (2 * 1.96)) if cum_range > 1e-12 else max(abs(cum_eff) * 0.25, 1e-10)
+            # p-value = prob che l'effetto sia ≤ 0 (se positivo) o ≥ 0 (se negativo)
+            if cum_std > 0:
+                p_val = float(_st.norm.cdf((0.0 - cum_eff) / cum_std))
+            else:
+                p_val = 0.5
+            # posterior_prob = probabilità che l'effetto causale abbia il segno osservato
             posterior_prob = round((1 - p_val) * 100, 1)
-            cum_m  = (pe    * DAILY_CONSUMPTION_L[fuel_key] / 1e6).sum()
-            cum_lo = (pe_lo * DAILY_CONSUMPTION_L[fuel_key] / 1e6).sum()
-            cum_hi = (pe_hi * DAILY_CONSUMPTION_L[fuel_key] / 1e6).sum()
+
+            # Calcolo guadagno in M€ con consumi reali (sovrascrive gain_meur già calcolato in _plot_event_fuel)
+            # Usiamo lo stesso metodo per coerenza
+            cons_aligned = cons.reindex(post_dates, method="ffill").fillna(cons.mean())
+            daily_gain = (pe * cons_aligned) / 1e6
+            cum_m      = daily_gain.sum()
+            cum_lo     = ((pe_lo * cons_aligned) / 1e6).sum()
+            cum_hi     = ((pe_hi * cons_aligned) / 1e6).sum()
 
             n_pre = len(series[
                 (series.index >= shock - pd.Timedelta(days=PRE_WIN)) &
@@ -729,7 +776,7 @@ def main() -> None:
                 "abs_effect_hi_eurl":  round(abs_eff_hi, 5),
                 "abs_effect_cum_eurl": round(abs_eff_cum, 4),
                 "rel_effect_pct":      round(rel_eff * 100, 2),
-                # Guadagno in M€
+                # Guadagno in M€ (basato su consumi reali)
                 "gain_total_meur":     round(float(cum_m),  1),
                 "gain_ci_low_meur":    round(float(cum_lo), 1),
                 "gain_ci_high_meur":   round(float(cum_hi), 1),
@@ -738,7 +785,7 @@ def main() -> None:
                 "posterior_prob_pct":  posterior_prob,
                 "ci_type":             f"BSTS_bayesian_{int((1-CI_ALPHA)*100)}pct",
                 "note": (f"BSTS CausalImpact, baseline pre-shock, "
-                         f"cov={covariate_label}, mode={mode}"),
+                         f"cov={covariate_label}, mode={mode}, consumi giornalieri reali"),
             })
 
         fig.tight_layout()

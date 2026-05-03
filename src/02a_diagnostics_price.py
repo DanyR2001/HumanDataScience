@@ -285,7 +285,7 @@ def test_autocorrelation(series: pd.Series) -> dict:
         "lb": lb_summary, "lb_fail": lb_fail,
         "residuals": residuals,   # passato ai test normalità/ARCH
         "fallback": fallback, "status": status,
-        "detail": (f"AR({p_sel}) AIC={aic:.1f if not np.isnan(aic) else 'n.d.'} | "
+        "detail": (f"AR({p_sel}) AIC={f'{aic:.1f}' if not np.isnan(aic) else 'n.d.'} | "
                    f"φ={phi:.3f}  n_eff={n_eff}/{n} | "
                    f"LB-residui p({LB_LAGS})={list(lb_summary.values())}"
                    f"{fallback_note}"),
@@ -755,9 +755,10 @@ def plot_one_autocorrelation(win, ev, fuel_key, fcolor, res):
 
     lb_vals = list(res["lb"].values())
     fallback = " [FALLBACK: diff. prime]" if res.get("fallback") else ""
+    _aic_str760 = f"{res['aic']:.1f}" if not np.isnan(res["aic"]) else "n.d."
     axes[1].text(0.02, 0.05,
                  f"φ AR(1) = {res['phi_ar1']:.3f}  n_eff={res['n_eff']}/{res['n']}\n"
-                 f"AR({res['ar_order']}) AIC={res['aic']:.1f if not np.isnan(res['aic']) else 'n.d.'}\n"
+                 f"AR({res['ar_order']}) AIC={_aic_str760}\n"
                  f"LB p (lag 5/10/20) = {lb_vals[0]}  {lb_vals[1]}  {lb_vals[2]}{fallback}",
                  transform=axes[1].transAxes, fontsize=8.5, va="bottom", family="monospace",
                  bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.9, edgecolor="none"))

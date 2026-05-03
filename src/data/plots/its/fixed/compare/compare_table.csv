@@ -1,7 +1,7 @@
-evento,carburante,V1 – Naïve OLS,V3 – ARIMAX/ITS,V5 – BSTS CausalImpact,V6 – GLM Gamma,range_meur,mean_meur,sign_agree
-Hormuz (Feb 2026),benzina,-1.0,-4.8,9.8,-1.1,14.600000000000001,0.7250000000000002,✗
-Hormuz (Feb 2026),gasolio,-51.6,-35.6,-26.7,-51.6,24.900000000000002,-41.375,✓
-Iran-Israele (Giu 2025),benzina,7.2,7.2,22.7,7.0,15.7,11.025,✓
-Iran-Israele (Giu 2025),gasolio,23.7,-11.4,34.4,20.8,45.8,16.875,✗
-Ucraina (Feb 2022),benzina,19.8,12.2,17.6,19.6,7.600000000000001,17.3,✓
-Ucraina (Feb 2022),gasolio,-21.9,-21.4,-6.6,-22.5,15.9,-18.1,✓
+evento,carburante,V1 – Naïve OLS,V3 – ARIMA/ITS,V5 – BSTS CausalImpact,V6 – GLM Gamma,range_meur,mean_meur,sign_agree
+Hormuz (Feb 2026),benzina,-2.7,-12.9,26.2,-2.9,39.1,1.9249999999999994,✗
+Hormuz (Feb 2026),gasolio,-113.7,-65.0,-36.8,-113.6,76.9,-82.275,✓
+Iran-Israele (Giu 2025),benzina,21.8,21.8,69.4,21.3,48.10000000000001,33.575,✓
+Iran-Israele (Giu 2025),gasolio,99.1,-29.4,153.8,89.0,183.20000000000002,78.125,✗
+Ucraina (Feb 2022),benzina,44.4,27.4,39.4,43.7,17.0,38.724999999999994,✓
+Ucraina (Feb 2022),gasolio,-67.5,-65.7,-8.0,-70.1,62.099999999999994,-52.824999999999996,✓
