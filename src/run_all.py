@@ -64,7 +64,9 @@ ITS_STEPS = [
     ("v5",  "02d_v5_causalimpact.py", "ITS Metodo 5 — BSTS CausalImpact"),
     #("v6",  "02d_v6_glm_gamma.py",    "ITS Metodo 6 — GLM Gamma log-link"),
     ("v7",  "02d_v7_theilsen.py",     "ITS Metodo 7 — Theil-Sen + Block Bootstrap"),
+    ("v8",  "02d_v8_pymc.py",     "Pymc Metodo 8"),
     ("cmp", "02d_compare.py",         "ITS Confronto — Metodi"),
+    ("02e", "02e_statistical_tests.py", "Test Statistici — Batteria Completa"),
 ]
 
 # Per ogni metodo ITS, queste sono le 3 varianti che vengono eseguite in ordine:

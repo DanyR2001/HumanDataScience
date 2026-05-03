@@ -444,6 +444,26 @@ def main() -> None:
                       f"LM={diag['bg_stat']:.2f}  p={diag['bg_p']:.3f}  "
                       f"{'OK' if diag['bg_p'] > 0.05 else '⚠ autocorr.'}")
 
+            # ── Export residui pre/post (standard per 02d_compare nonparam) ──
+            _safe_ev = (ev_name.replace(" ", "_").replace("/", "")
+                               .replace("(", "").replace(")", ""))
+            _resid_rows = []
+            for _d, _r in zip(fit["pre"].index, fit["residuals"]):
+                _resid_rows.append({
+                    "date": str(_d.date()), "residual": float(_r), "phase": "pre",
+                    "metodo": "v1_naive", "evento": ev_name,
+                    "carburante": fuel_key, "break_date": str(break_date.date()),
+                })
+            for _d, _r in zip(post_data.index, extra.values):
+                _resid_rows.append({
+                    "date": str(_d.date()), "residual": float(_r), "phase": "post",
+                    "metodo": "v1_naive", "evento": ev_name,
+                    "carburante": fuel_key, "break_date": str(break_date.date()),
+                })
+            pd.DataFrame(_resid_rows).to_csv(
+                OUT_DIR / f"residuals_{_safe_ev}_{fuel_key}.csv", index=False
+            )
+
             rows.append({
                 "metodo":            "v1_naive",
                 "mode":              mode,

@@ -508,7 +508,9 @@ def _plot_its(
     """
     3 pannelli per ogni fuel:
       (a) Serie + previsione CF best approccio (linea nera tratteggiata)
+          + area verde dove actual > CF, area rossa dove actual < CF
       (b) Differenziale  actual − CF  con le 3 stime del gap
+          + area verde dove gap > 0, area rossa dove gap < 0
       (c) Guadagno cumulato
     """
     colors = {"A": "#2980b9", "B": "#e67e22", "C": "#27ae60"}
@@ -533,11 +535,31 @@ def _plot_its(
                        label=f"T0 PELT ({t0.date()})")
 
     best_fc = pd.Series(results[best_key]["forecast"], index=post.index)
+
+    # Area verde dove actual > CF, area rossa dove actual < CF (solo nel periodo post)
+    actual_post = pd.Series(post.values, index=post.index)
+    ax_ser.fill_between(
+        post.index,
+        actual_post, best_fc,
+        where=(actual_post >= best_fc),
+        alpha=0.20, color="green",
+        label="Actual > CF (margine sopra atteso)",
+        zorder=2,
+    )
+    ax_ser.fill_between(
+        post.index,
+        actual_post, best_fc,
+        where=(actual_post < best_fc),
+        alpha=0.20, color="red",
+        label="Actual < CF (margine sotto atteso)",
+        zorder=2,
+    )
+
     ax_ser.plot(best_fc.index, best_fc.values, color="black", lw=1.4, ls="--",
                 label=f"CF {best_key} ★  RMSE={results[best_key]['rmse']:.4f}", zorder=4)
     ax_ser.fill_between(post.index,
                         results[best_key]["ci_lo"], results[best_key]["ci_hi"],
-                        alpha=0.12, color="black")
+                        alpha=0.10, color="black", zorder=1)
 
     approach_labels = {"A": "ARIMA-AIC", "B": "Holt-Winters", "C": "OLS-trend"}
     ax_ser.set_title(
@@ -559,8 +581,25 @@ def _plot_its(
                 + (" ★" if key == best_key else ""))
         ax_diff.plot(post.index, gap, color=lc, lw=lw, ls=ls, label=lbl, zorder=3)
 
-    raw_gap = post.values - results[best_key]["forecast"]
-    ax_diff.bar(post.index, raw_gap, color=fuel_color, alpha=0.18, width=0.8)
+    # Area verde dove gap > 0 (margine sopra CF), area rossa dove gap < 0
+    raw_gap = pd.Series(post.values - results[best_key]["forecast"], index=post.index)
+    ax_diff.fill_between(
+        post.index,
+        raw_gap, 0,
+        where=(raw_gap >= 0),
+        alpha=0.20, color="green",
+        label="extra > 0 (margine sopra CF)",
+        zorder=2,
+    )
+    ax_diff.fill_between(
+        post.index,
+        raw_gap, 0,
+        where=(raw_gap < 0),
+        alpha=0.20, color="red",
+        label="extra < 0 (margine sotto CF)",
+        zorder=2,
+    )
+
     ax_diff.axhline(0, color="grey", lw=0.8, ls="--")
     ax_diff.axvline(shock, color=ev["color"], lw=1.2, ls="--")
     ax_diff.set_title(
@@ -770,6 +809,33 @@ def main() -> None:
             _plot_its(ev_name, ev, series, fuel_key, fuel_color,
                       pre, post, order, results, best_key,
                       t0, shock, mode, fig, row_idx, cons)
+
+            # ── Export residui pre/post BEST approach (standard per nonparam) ─
+            _safe_ev = (ev_name.replace(" ", "_").replace("/", "")
+                               .replace("(", "").replace(")", ""))
+            _best_res = results[best_key]
+            _pre_resid_arr = (np.asarray(pre_fit.resid, float)
+                              if pre_fit is not None else np.array([]))
+            _resid_rows = []
+            # Pre: residui ARIMA stimati sulla finestra pre-break
+            _pre_dates = pre.index[:len(_pre_resid_arr)]
+            for _d, _r in zip(_pre_dates, _pre_resid_arr):
+                _resid_rows.append({
+                    "date": str(_d.date()), "residual": float(_r), "phase": "pre",
+                    "metodo": "v3_arima", "evento": ev_name,
+                    "carburante": fuel_key, "break_date": str(t0.date()),
+                })
+            # Post: actual − baseline ARIMA (= extra-profitto giornaliero)
+            _post_extra = _best_res.get("extra", np.array([]))
+            for _d, _r in zip(post.index[:len(_post_extra)], _post_extra):
+                _resid_rows.append({
+                    "date": str(_d.date()), "residual": float(_r), "phase": "post",
+                    "metodo": "v3_arima", "evento": ev_name,
+                    "carburante": fuel_key, "break_date": str(t0.date()),
+                })
+            pd.DataFrame(_resid_rows).to_csv(
+                OUT_DIR / f"residuals_{_safe_ev}_{fuel_key}.csv", index=False
+            )
 
             def _row_base():
                 return {

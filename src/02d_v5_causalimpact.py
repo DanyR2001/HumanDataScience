@@ -747,6 +747,34 @@ def main() -> None:
                 (series.index < shock)
             ])
 
+            # ── Export residui pre/post (standard per 02d_compare nonparam) ──
+            # Pre: response − point_pred sul periodo pre-break (residui BSTS)
+            # Post: point_effect (actual − counterfactual, = extra-margine)
+            _safe_ev = (ev_name.replace(" ", "_").replace("/", "")
+                               .replace("(", "").replace(")", ""))
+            _pre_mask_r = inf.index < break_date
+            _inf_pre = inf.loc[_pre_mask_r]
+            _resid_rows = []
+            if "response" in _inf_pre.columns and "point_pred" in _inf_pre.columns:
+                _pre_resid_s = _inf_pre["response"] - _inf_pre["point_pred"]
+                for _d, _r in _pre_resid_s.dropna().items():
+                    _resid_rows.append({
+                        "date": str(_d.date()), "residual": float(_r), "phase": "pre",
+                        "metodo": "v5_causalimpact", "evento": ev_name,
+                        "carburante": fuel_key, "break_date": str(break_date.date()),
+                    })
+            # Post residuals = point_effect sul periodo post-break
+            _post_pe = inf.loc[post_mask, "point_effect"].dropna()
+            for _d, _r in _post_pe.items():
+                _resid_rows.append({
+                    "date": str(_d.date()), "residual": float(_r), "phase": "post",
+                    "metodo": "v5_causalimpact", "evento": ev_name,
+                    "carburante": fuel_key, "break_date": str(break_date.date()),
+                })
+            pd.DataFrame(_resid_rows).to_csv(
+                OUT_DIR / f"residuals_{_safe_ev}_{fuel_key}.csv", index=False
+            )
+
             print(f"    Break ({break_method}) = {break_date.date()}"
                   f"  (shock={shock.date()})")
             print(f"    Abs effect avg        = {abs_eff_avg:+.4f} €/L  "

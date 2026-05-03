@@ -47,6 +47,12 @@ try:
 except ImportError:
     _HAS_FORECAST_CONSUMI = False
 
+try:
+    from nonparametric_tests import nonparam_h0_battery, print_battery_results
+    _HAS_NONPARAM = True
+except ImportError:
+    _HAS_NONPARAM = False
+
 # ── Configurazione ─────────────────────────────────────────────────────────────
 BASE_DIR  = Path(__file__).parent
 _OUT_BASE = BASE_DIR / "data" / "plots" / "its"
@@ -57,15 +63,16 @@ _OUT_BASE = BASE_DIR / "data" / "plots" / "its"
 COLORS = {
     "v1_naive":        "#96b0fd",   # blu pastello
     "v3_arima":        "#FDFD96",   # giallo pastello
-    "v5_causalimpact": "#fd9696",   # 
     "v7_theilsen":     "#D32E2E",   
+    "v8_pymc": "#fd9696",   # 
 }
 
 LABELS = {
     "v1_naive":        "V1 – Naïve OLS",
     "v3_arima":        "V3 – ARIMA/ITS",
-    "v5_causalimpact": "V5 – BSTS CausalImpact",
     "v7_theilsen":     "V7 – Theil-Sen Bootstrap",
+    "v8_pymc":         "V4 – PYMC",
+
 }
 
 FUEL_PATTERNS = {"benzina": "/", "gasolio": ""}
@@ -109,8 +116,8 @@ def load_results(mode: str, detect_target: str = "margin") -> pd.DataFrame:
     csv_paths = {
         "v1_naive":        its_dir / "v1_naive"        / "v1_naive_results.csv",
         "v3_arima":        its_dir / "v3_arima"        / "v3_arima_results.csv",
-        "v5_causalimpact": its_dir / "v5_causalimpact" / "v5_causalimpact_results.csv",
         "v7_theilsen":     its_dir / "v7_theilsen"     / "v7_theilsen_results.csv",
+        "v8_pymc": its_dir / "v8_pymc" / "v8_pymc_results.csv",
     }
 
     frames = []
@@ -150,6 +157,60 @@ def load_results(mode: str, detect_target: str = "margin") -> pd.DataFrame:
 
     combined = pd.concat(frames, ignore_index=True)
     print(f"  Caricati {len(frames)} metodi: {[f['metodo'].iloc[0] for f in frames]}")
+    return combined
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Caricamento residui (per test non-parametrici)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_residuals(mode: str, detect_target: str = "margin") -> pd.DataFrame:
+    """
+    Carica tutti i CSV residuals_{evento}_{carburante}.csv prodotti dai
+    modelli v1, v3, v5, v7 e li concatena in un unico DataFrame.
+
+    Schema atteso per ogni CSV:
+      date, residual, phase (pre|post), metodo, evento, carburante, break_date
+    """
+    if mode == "detected":
+        its_dir = _OUT_BASE / "detected" / detect_target
+    else:
+        its_dir = _OUT_BASE / mode
+
+    METHOD_DIRS = {
+        "v1_naive":        its_dir / "v1_naive",
+        "v3_arima":        its_dir / "v3_arima",
+        "v7_theilsen":     its_dir / "v7_theilsen",
+        "v8_pymc":         its_dir / "v8_pymc"
+    }
+
+    frames = []
+    for method, mdir in METHOD_DIRS.items():
+        if not mdir.exists():
+            continue
+        csv_files = sorted(mdir.glob("residuals_*.csv"))
+        if not csv_files:
+            print(f"  ⚠ {method}: nessun residuals_*.csv in {mdir}")
+            continue
+        for csv_path in csv_files:
+            try:
+                df = pd.read_csv(csv_path, parse_dates=["date"])
+                # Normalizza: se metodo non è nel file usa nome directory
+                if "metodo" not in df.columns:
+                    df["metodo"] = method
+                frames.append(df)
+            except Exception as e:
+                print(f"  ⚠ {csv_path.name}: errore lettura ({e})")
+
+    if not frames:
+        print(f"  ⚠ Nessun file residuals_*.csv trovato sotto {its_dir}")
+        return pd.DataFrame()
+
+    combined = pd.concat(frames, ignore_index=True)
+    print(f"  Residui caricati: {len(combined)} righe "
+          f"da {combined['metodo'].nunique()} modelli, "
+          f"{combined['evento'].nunique()} eventi, "
+          f"{combined['carburante'].nunique()} carburanti")
     return combined
 
 
@@ -397,7 +458,7 @@ def plot_scatter(pivot_df: pd.DataFrame, out_dir: Path, mode: str) -> None:
 
 
 def _plot_scatter_single(pivot_df: pd.DataFrame, out_dir: Path, mode: str, ev_label) -> None:
-    available = [m for m in ["v1_naive","v3_arima","v5_causalimpact","v7_theilsen"]
+    available = [m for m in ["v1_naive","v3_arima","v7_theilsen","v8_pymc"]
                  if m in pivot_df.columns]
     pairs = [(a, b) for i, a in enumerate(available) for b in available[i+1:]]
 
@@ -466,7 +527,7 @@ def plot_heatmap(df: pd.DataFrame, out_dir: Path, mode: str) -> None:
 
 
 def _plot_heatmap_single(df: pd.DataFrame, out_dir: Path, mode: str, ev_label: str) -> None:
-    available = [m for m in ["v1_naive","v3_arima","v5_causalimpact","v7_theilsen"]
+    available = [m for m in ["v1_naive","v3_arima","v7_theilsen","v8_pymc"]
                  if m in df["metodo"].unique()]
 
     if len(available) < 2:
@@ -522,7 +583,7 @@ def _plot_heatmap_single(df: pd.DataFrame, out_dir: Path, mode: str, ev_label: s
 # 5. Test H₀ / H₁ — Profitto Anomalo
 # ══════════════════════════════════════════════════════════════════════════════
 
-ACTIVE_METHODS = ["v1_naive", "v3_arima", "v5_causalimpact", "v7_theilsen"]
+ACTIVE_METHODS = ["v1_naive", "v3_arima", "v7_theilsen","v8_pymc"]
 
 # Ipotesi:
 #   H₀ : i distributori NON generano profitti anomali in prossimità di shock
@@ -796,7 +857,7 @@ def plot_h0_heatmap(h0_df: pd.DataFrame, out_dir: Path, mode: str) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def print_sign_agreement(pivot_df: pd.DataFrame) -> None:
-    available = [m for m in ["v1_naive","v3_arima","v5_causalimpact","v7_theilsen"]
+    available = [m for m in ["v1_naive","v3_arima","v7_theilsen","v8_pymc"]
                  if m in pivot_df.columns]
     if len(available) < 2:
         return
@@ -819,6 +880,211 @@ def print_sign_agreement(pivot_df: pd.DataFrame) -> None:
             s = f"{v:+.0f}" if not (isinstance(v, float) and np.isnan(v)) else "n/a"
             print(f"  {s:>14}", end="")
         print(f"  {agree}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. Test H₀ non-parametrici su residui ITS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_nonparam_h0_tests(
+    resid_df: pd.DataFrame,
+    alpha: float = 0.05,
+    n_perm: int = 4999,
+) -> pd.DataFrame:
+    """
+    Per ogni (evento, carburante, metodo) applica la batteria non-parametrica
+    sulle serie di residui pre/post esportate dai modelli ITS.
+
+    Testa H₀: i residui post-break hanno mediana ≤ 0 (nessun extra-profitto).
+    H₁: i residui post-break hanno mediana > 0 (extra-profitto anomalo).
+
+    Ritorna DataFrame con una riga per ogni (evento, carburante, metodo).
+    """
+    if not _HAS_NONPARAM:
+        print("  ⚠ utils/nonparametric_tests.py non trovato – sezione 6 saltata.")
+        return pd.DataFrame()
+
+    if resid_df.empty:
+        return pd.DataFrame()
+
+    required_cols = {"date", "residual", "phase", "metodo", "evento", "carburante"}
+    if not required_cols.issubset(resid_df.columns):
+        missing = required_cols - set(resid_df.columns)
+        print(f"  ⚠ Colonne mancanti nei residui: {missing}")
+        return pd.DataFrame()
+
+    rows = []
+    rng  = np.random.default_rng(42)
+
+    groups = resid_df.groupby(["evento", "carburante", "metodo"])
+    for (ev_name, fuel_key, metodo), grp in groups:
+        pre_resid  = grp.loc[grp["phase"] == "pre",  "residual"].dropna().values
+        post_resid = grp.loc[grp["phase"] == "post", "residual"].dropna().values
+
+        if len(post_resid) < 4:
+            print(f"  [{metodo} | {fuel_key} | {ev_name}] "
+                  f"post_resid insufficienti ({len(post_resid)}) — salto.")
+            continue
+
+        label = f"{metodo}  ·  {fuel_key.upper()}  ·  {ev_name}"
+        print(f"\n  ── {label}")
+        result = nonparam_h0_battery(
+            post_resid=post_resid,
+            pre_resid=pre_resid,
+            alpha=alpha,
+            n_perm=n_perm,
+            rng=rng,
+        )
+        print_battery_results(result, label=label, alpha=alpha)
+
+        row = {
+            "evento":     ev_name,
+            "carburante": fuel_key,
+            "metodo":     metodo,
+        }
+        row.update(result)
+        rows.append(row)
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+def plot_nonparam_heatmap(
+    np_df: pd.DataFrame,
+    out_dir: Path,
+    mode_label: str,
+    alpha: float = 0.05,
+) -> None:
+    """
+    Heatmap 2D: righe = (evento × carburante), colonne = metodo.
+    Colore: verde = H₀ rigettata (profitto anomalo), rosso = H₀ non rigettata.
+    Intensità proporzionale al numero di test che rifiutano H₀.
+    """
+    if np_df.empty:
+        return
+
+    methods  = [m for m in ["v1_naive", "v3_arima", "v7_theilsen","v8_pymc"]
+                if m in np_df["metodo"].values]
+    ev_fuel_combos = (np_df[["evento", "carburante"]]
+                      .drop_duplicates()
+                      .sort_values(["carburante", "evento"])
+                      .reset_index(drop=True))
+
+    nrows = len(ev_fuel_combos)
+    ncols = len(methods) + 1  # +1 per colonna VERDETTO aggregato
+
+    # Matrice valore: [0,1] proporzionale a n_reject/n_valid; -1 = N/D
+    mat = np.full((nrows, ncols), -1.0)
+
+    for i, (_, combo) in enumerate(ev_fuel_combos.iterrows()):
+        ev   = combo["evento"]
+        fuel = combo["carburante"]
+        sub  = np_df[(np_df["evento"] == ev) & (np_df["carburante"] == fuel)]
+
+        method_verdicts = []
+        for j, met in enumerate(methods):
+            row_m = sub[sub["metodo"] == met]
+            if row_m.empty:
+                continue
+            r = row_m.iloc[0]
+            n_valid  = int(r.get("n_tests_valid", 0))
+            n_reject = int(r.get("n_tests_reject", 0))
+            val = (n_reject / n_valid) if n_valid > 0 else -1.0
+            mat[i, j] = val
+            method_verdicts.append(bool(r.get("h0_rejected", False)))
+
+        # Colonna aggregata: majority vote tra i metodi disponibili
+        if method_verdicts:
+            agg_reject = sum(method_verdicts)
+            agg_val    = agg_reject / len(method_verdicts)
+            mat[i, ncols - 1] = agg_val
+
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "h0_nonparam",
+        [(0.0, "#e74c3c"), (0.5, "#f9e4b7"), (1.0, "#27ae60")],
+    )
+    norm = mcolors.Normalize(vmin=0.0, vmax=1.0)
+
+    col_labels = [LABELS.get(m, m) for m in methods] + ["VERDETTO\nAggregato"]
+
+    fig, ax = plt.subplots(figsize=(max(10, ncols * 2.4), max(4, nrows * 0.85 + 2.0)))
+    fig.suptitle(
+        f"Test H₀ Non-Parametrici — Profitti Anomali Distributori  [mode={mode_label}]\n"
+        f"Verde = H₀ rigettata (extra-profitto)  |  Rosso = H₀ non rigettata  |  "
+        f"α={alpha}",
+        fontsize=11, fontweight="bold",
+    )
+
+    for i in range(nrows):
+        for j in range(ncols):
+            v = mat[i, j]
+            color = cmap(norm(v)) if v >= 0 else "#bdc3c7"
+            rect = plt.Rectangle([j, nrows - i - 1], 1, 1, facecolor=color,
+                                  edgecolor="white", linewidth=1.8)
+            ax.add_patch(rect)
+
+            # Testo: percentuale test che rifiutano H₀
+            if v < 0:
+                text = "N/D"
+            else:
+                sub2 = np_df[
+                    (np_df["evento"] == ev_fuel_combos.iloc[i]["evento"]) &
+                    (np_df["carburante"] == ev_fuel_combos.iloc[i]["carburante"])
+                ]
+                if j < len(methods):
+                    row_m2 = sub2[sub2["metodo"] == methods[j]]
+                    if not row_m2.empty:
+                        r2 = row_m2.iloc[0]
+                        n_valid2  = int(r2.get("n_tests_valid", 0))
+                        n_reject2 = int(r2.get("n_tests_reject", 0))
+                        hl = r2.get("hodges_lehmann_eurl", float("nan"))
+                        hl_s = f"\nHL={float(hl):+.4f}" if isinstance(hl, (int, float)) and np.isfinite(float(hl)) else ""
+                        text = f"{n_reject2}/{n_valid2}{hl_s}"
+                    else:
+                        text = "N/D"
+                else:
+                    # Aggregato
+                    verdicts = []
+                    for met2 in methods:
+                        rm2 = sub2[sub2["metodo"] == met2]
+                        if not rm2.empty:
+                            verdicts.append(bool(rm2.iloc[0].get("h0_rejected", False)))
+                    agree  = sum(verdicts)
+                    total  = len(verdicts)
+                    symbol = "✔" if agree > total / 2 else "✘"
+                    text   = f"{symbol}\n{agree}/{total}"
+
+            text_color = "white" if v in (0.0, 1.0) or (v > 0.85) or (v < 0.10) else "black"
+            ax.text(j + 0.5, nrows - i - 0.5, text,
+                    ha="center", va="center", fontsize=7.5,
+                    fontweight="bold" if j == ncols - 1 else "normal",
+                    color=text_color)
+
+    ax.set_xlim(0, ncols)
+    ax.set_ylim(0, nrows)
+    ax.set_xticks(np.arange(ncols) + 0.5)
+    ax.set_xticklabels(col_labels, fontsize=8, rotation=20, ha="right")
+    ax.set_yticks(np.arange(nrows) + 0.5)
+    ax.set_yticklabels(
+        [f"{ev_fuel_combos.iloc[nrows - i - 1]['carburante'].upper()}\n"
+         f"{ev_fuel_combos.iloc[nrows - i - 1]['evento'][:22]}"
+         for i in range(nrows)],
+        fontsize=7,
+    )
+    ax.tick_params(length=0)
+
+    # Colorbar
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, fraction=0.025, pad=0.02)
+    cbar.set_label("Frazione test che rifiutano H₀", fontsize=8)
+
+    fig.tight_layout()
+    out = out_dir / "nonparam_h0_heatmap.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  → Heatmap non-parametrica: {out}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -904,8 +1170,50 @@ def main() -> None:
         h0_df.to_csv(h0_csv, index=False)
         print(f"  → CSV H₀ test: {h0_csv}")
 
+    # ── 6. Test H₀ NON-PARAMETRICI su residui ITS ────────────────────────────
+    print(f"\n{'═'*70}")
+    print("  6. TEST NON-PARAMETRICI H₀/H₁  (batteria su residui ITS)")
+    print(f"     H₀: residui post-break hanno mediana ≤ 0  (nessun extra-profitto)")
+    print(f"     H₁: residui post-break hanno mediana  > 0  (profitto anomalo)")
+    print(f"{'═'*70}")
+
+    resid_df = load_residuals(mode, detect_target)
+    if not resid_df.empty and _HAS_NONPARAM:
+        np_df = run_nonparam_h0_tests(resid_df, alpha=0.05, n_perm=4999)
+        if not np_df.empty:
+            np_csv = OUT_DIR / "nonparam_h0_summary.csv"
+            np_df.to_csv(np_csv, index=False)
+            print(f"\n  → CSV non-parametrico: {np_csv}")
+
+            # Stampa riepilogo compatto
+            print(f"\n{'─'*70}")
+            print("  RIEPILOGO VERDETTI NON-PARAMETRICI")
+            print(f"  {'Evento':<28} {'Carb.':<10} {'Metodo':<22} "
+                  f"{'n_post':>6} {'HL (€/L)':>10} {'Rigetti':>7}  Verdetto")
+            print(f"  {'─'*100}")
+            for _, r in np_df.sort_values(
+                    ["carburante", "evento", "metodo"]).iterrows():
+                hl  = r.get("hodges_lehmann_eurl", float("nan"))
+                hl_s = f"{float(hl):+.5f}" if isinstance(hl, (int, float)) and np.isfinite(float(hl)) else "  N/D   "
+                icon = "🔴" if r.get("verdict") == "H0_RIGETTATA" else (
+                       "🟡" if r.get("verdict") == "INDETERMINATO" else "🟢")
+                print(f"  {str(r['evento'])[:27]:<28} "
+                      f"{str(r['carburante'])[:9]:<10} "
+                      f"{str(r['metodo'])[:21]:<22} "
+                      f"{int(r.get('n_post', 0)):>6} "
+                      f"{hl_s:>10} "
+                      f"{int(r.get('n_tests_reject', 0)):>2}/{int(r.get('n_tests_valid', 0)):<4} "
+                      f" {icon} {r.get('verdict', '?')}")
+
+            plot_nonparam_heatmap(np_df, OUT_DIR, mode_label, alpha=0.05)
+    elif not _HAS_NONPARAM:
+        print("  ⚠ utils/nonparametric_tests.py non trovato — sezione saltata.")
+        print("    Assicurarsi che il file esista nella cartella utils/.")
+    else:
+        print("  ⚠ Nessun file residuals_*.csv trovato — eseguire prima i modelli ITS.")
+
     # ── Statistiche ───────────────────────────────────────────────────────────
-    available = [m for m in ["v1_naive","v3_arima","v5_causalimpact","v7_theilsen"]
+    available = [m for m in ["v1_naive","v3_arima","v7_theilsen","v8_pymc"]
                  if m in pivot_raw.columns]
     if len(available) >= 2:
         gains  = pivot_raw[available].values.astype(float)

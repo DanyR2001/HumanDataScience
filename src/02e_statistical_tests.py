@@ -949,7 +949,6 @@ def plot_windows(
         match_rows = [r for r in window_rows
                       if r.get("serie") == series_name and r.get("evento") == ev_name]
         mw_p = match_rows[0].get("mw_p_1s") if match_rows else None
-        stars = _significance_stars(mw_p)
         cliff = match_rows[0].get("cliffs_delta") if match_rows else None
         verdict = match_rows[0].get("verdict_mean_shift", "") if match_rows else ""
 
@@ -998,7 +997,7 @@ def plot_windows(
         ax_bx.plot([0, 1], [y_max + 0.02 * y_range] * 2, "k-", lw=1)
         ax_bx.text(
             0.5, y_max + 0.04 * y_range,
-            f"{stars}  MW p={mw_p:.3f}" if mw_p is not None else stars,
+            f"MW p={mw_p:.3f}" if mw_p is not None else "",
             ha="center", va="bottom", fontsize=9, fontweight="bold"
         )
         cd_str = f"  Cliff δ={cliff:+.3f} ({match_rows[0].get('cliffs_interp', '')})" if cliff is not None else ""
