@@ -1,7 +1,0 @@
-﻿evento,shock,carburante,status,fligner_stat,fligner_p,fligner_het,lev_stat,lev_p,sigma_pre,sigma_post,ratio_post_pre,arch_warning
-Ucraina (Feb 2022),2022-02-24,gasolio,✗ FAIL,51.6996,0.0,True,65.3693,0.0,0.013917,0.176234,12.663,True
-Ucraina (Feb 2022),2022-02-24,benzina,✗ FAIL,33.9816,0.0,True,35.5793,0.0,0.011314,0.110957,9.807,True
-Iran-Israele (Giu 2025),2025-06-13,gasolio,✗ FAIL,12.4592,0.0004,True,13.9571,0.0003,0.016146,0.031921,1.977,True
-Iran-Israele (Giu 2025),2025-06-13,benzina,OK,0.1332,0.7151,False,0.3082,0.5802,0.010274,0.014345,1.396,True
-Hormuz (Feb 2026),2026-02-28,gasolio,✗ FAIL,18.4323,0.0,True,18.1153,0.0001,0.014236,0.087166,6.123,True
-Hormuz (Feb 2026),2026-02-28,benzina,✗ FAIL,27.158,0.0,True,32.0079,0.0,0.007944,0.066628,8.388,True

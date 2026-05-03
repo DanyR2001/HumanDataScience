@@ -1,7 +1,0 @@
-﻿evento,shock,carburante,status,lm_stat,lm_p,f_stat,arch_detected
-Ucraina (Feb 2022),2022-02-24,gasolio,✗ FAIL (volatility clustering),22.2413,0.0139,2.3957,True
-Ucraina (Feb 2022),2022-02-24,benzina,✗ FAIL (volatility clustering),32.6976,0.0003,3.7941,True
-Iran-Israele (Giu 2025),2025-06-13,gasolio,✗ FAIL (volatility clustering),21.9588,0.0153,2.3542,True
-Iran-Israele (Giu 2025),2025-06-13,benzina,✗ FAIL (volatility clustering),19.687,0.0324,2.0795,True
-Hormuz (Feb 2026),2026-02-28,gasolio,✗ FAIL (volatility clustering),32.5804,0.0003,4.1323,True
-Hormuz (Feb 2026),2026-02-28,benzina,✗ FAIL (volatility clustering),46.7712,0.0,7.242,True

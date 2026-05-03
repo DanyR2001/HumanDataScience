@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-02d_compare.py  ─  Confronto dei 3 Metodi ITS
+02d_compare.py  ─  Confronto dei 4 Metodi ITS
 ===============================================
-Legge i CSV di output prodotti da v1, v2, v3 e crea:
+Legge i CSV di output prodotti da v1, v3, v5, v7 e crea:
 
   1. Tabella comparativa guadagni extra (M€) per evento × carburante × metodo
   2. Barplot gruppi: un gruppo per evento, barre per metodo (benzina + gasolio)
-  3. Scatter plot: v1 vs v2, v1 vs v3, v2 vs v3 → misura di accordo
+  3. Scatter plot: coppie v1/v3/v5/v7 → misura di accordo
   4. Heatmap: accordo tra metodi per ogni combinazione evento+carburante
+
+Metodi attivi: v1 (Naïve OLS) · v3 (ARIMA) · v5 (BSTS CausalImpact) · v7 (Theil-Sen Bootstrap)
+Palette pastello coerente: blu=#7EC8E3 · verde=#90D4A0 · lavanda=#C9A8E0 · arancio=#FFBC80
 
 Modalità (--mode):
   fixed     : legge da data/plots/its/fixed/{metodo}/         [default]
@@ -48,22 +51,21 @@ except ImportError:
 BASE_DIR  = Path(__file__).parent
 _OUT_BASE = BASE_DIR / "data" / "plots" / "its"
 
+# ── Palette pastello a 4 colori (coerente in tutti i grafici) ─────────────────
+# v1 = blu pastello  |  v3 = verde pastello
+# v5 = lavanda       |  v7 = arancio pastello
 COLORS = {
-    "v1_naive":        "#2c7fb8",
-    "v2_intermediate": "#31a354",
-    "v3_arima":       "#e6550d",
-    "v4_sarimax":      "#0de2e6",
-    "v5_causalimpact": "#984ea3",
-    "v6_glm_gamma":    "#ff7f00",
+    "v1_naive":        "#96b0fd",   # blu pastello
+    "v3_arima":        "#FDFD96",   # giallo pastello
+    "v5_causalimpact": "#fd9696",   # 
+    "v7_theilsen":     "#D32E2E",   
 }
 
 LABELS = {
     "v1_naive":        "V1 – Naïve OLS",
-    "v2_intermediate": "V2 – OLS HAC",
-    "v3_arima":       "V3 – ARIMA/ITS",
-    "v4_sarimax":      "V4 – SARIMAX",
+    "v3_arima":        "V3 – ARIMA/ITS",
     "v5_causalimpact": "V5 – BSTS CausalImpact",
-    "v6_glm_gamma":    "V6 – GLM Gamma",
+    "v7_theilsen":     "V7 – Theil-Sen Bootstrap",
 }
 
 FUEL_PATTERNS = {"benzina": "/", "gasolio": ""}
@@ -106,11 +108,9 @@ def load_results(mode: str, detect_target: str = "margin") -> pd.DataFrame:
         its_dir = _OUT_BASE / mode
     csv_paths = {
         "v1_naive":        its_dir / "v1_naive"        / "v1_naive_results.csv",
-        "v2_intermediate": its_dir / "v2_intermediate" / "v2_intermediate_results.csv",
-        "v3_arima":       its_dir / "v3_arima"       / "v3_arima_results.csv",
-        "v4_sarimax":      its_dir / "v4_transfer"     / "v4_sarimax_results.csv",
+        "v3_arima":        its_dir / "v3_arima"        / "v3_arima_results.csv",
         "v5_causalimpact": its_dir / "v5_causalimpact" / "v5_causalimpact_results.csv",
-        "v6_glm_gamma":    its_dir / "v6_glm_gamma"    / "v6_glm_gamma_results.csv",
+        "v7_theilsen":     its_dir / "v7_theilsen"     / "v7_theilsen_results.csv",
     }
 
     frames = []
@@ -121,7 +121,7 @@ def load_results(mode: str, detect_target: str = "margin") -> pd.DataFrame:
 
         df = pd.read_csv(path)
 
-        if method in ("v3_arima", "v4_sarimax") and "is_best" in df.columns:
+        if method in ("v3_arima",) and "is_best" in df.columns:
             df = df[df["is_best"].astype(bool)].copy()
 
         df["metodo"] = method
@@ -144,7 +144,7 @@ def load_results(mode: str, detect_target: str = "margin") -> pd.DataFrame:
         frames.append(df[cols_keep])
 
     if not frames:
-        print(f"  ✗ Nessun CSV trovato in {its_dir}. Eseguire prima v1, v2, v3 con --mode {mode}"
+        print(f"  ✗ Nessun CSV trovato in {its_dir}. Eseguire prima v1, v3, v5, v7 con --mode {mode}"
               + (f" --detect {detect_target}" if mode == "detected" else "") + ".")
         return pd.DataFrame()
 
@@ -164,7 +164,7 @@ def make_comparison_table(df: pd.DataFrame) -> pd.DataFrame:
         values="gain_total_meur",
         aggfunc="first",
     )
-    available = [m for m in ["v1_naive","v2_intermediate","v3_arima","v4_sarimax","v5_causalimpact","v6_glm_gamma"] if m in pivot.columns]
+    available = [m for m in ["v1_naive","v3_arima","v5_causalimpact","v7_theilsen"] if m in pivot.columns]
     if len(available) > 1:
         pivot["range_meur"] = pivot[available].max(axis=1) - pivot[available].min(axis=1)
         pivot["mean_meur"]  = pivot[available].mean(axis=1)
@@ -397,7 +397,7 @@ def plot_scatter(pivot_df: pd.DataFrame, out_dir: Path, mode: str) -> None:
 
 
 def _plot_scatter_single(pivot_df: pd.DataFrame, out_dir: Path, mode: str, ev_label) -> None:
-    available = [m for m in ["v1_naive","v2_intermediate","v3_arima","v4_sarimax","v5_causalimpact","v6_glm_gamma"]
+    available = [m for m in ["v1_naive","v3_arima","v5_causalimpact","v7_theilsen"]
                  if m in pivot_df.columns]
     pairs = [(a, b) for i, a in enumerate(available) for b in available[i+1:]]
 
@@ -412,7 +412,7 @@ def _plot_scatter_single(pivot_df: pd.DataFrame, out_dir: Path, mode: str, ev_la
     fig.suptitle(f"Accordo tra Metodi – Guadagni Extra (M€)  [mode={mode}]", fontsize=11)
 
     markers = {"benzina": "o", "gasolio": "s"}
-    fcolors = {"benzina": "#E63946", "gasolio": "#1D3557"}
+    fcolors = {"benzina": "#E07B7B", "gasolio": "#5B8DB8"}   # rosso/blu per carburante
     fuels   = pivot_df["carburante"].unique() if "carburante" in pivot_df.columns else []
 
     for ax, (m1, m2) in zip(axes, pairs):
@@ -466,7 +466,7 @@ def plot_heatmap(df: pd.DataFrame, out_dir: Path, mode: str) -> None:
 
 
 def _plot_heatmap_single(df: pd.DataFrame, out_dir: Path, mode: str, ev_label: str) -> None:
-    available = [m for m in ["v1_naive","v2_intermediate","v3_arima","v4_sarimax","v5_causalimpact","v6_glm_gamma"]
+    available = [m for m in ["v1_naive","v3_arima","v5_causalimpact","v7_theilsen"]
                  if m in df["metodo"].unique()]
 
     if len(available) < 2:
@@ -522,7 +522,7 @@ def _plot_heatmap_single(df: pd.DataFrame, out_dir: Path, mode: str, ev_label: s
 # 5. Test H₀ / H₁ — Profitto Anomalo
 # ══════════════════════════════════════════════════════════════════════════════
 
-ACTIVE_METHODS = ["v1_naive", "v3_arima", "v5_causalimpact", "v6_glm_gamma"]
+ACTIVE_METHODS = ["v1_naive", "v3_arima", "v5_causalimpact", "v7_theilsen"]
 
 # Ipotesi:
 #   H₀ : i distributori NON generano profitti anomali in prossimità di shock
@@ -546,7 +546,7 @@ def make_h0_test_table(df: pd.DataFrame,
       3. Fallback: h0_rejected = gain_ci_low_meur > 0  (CI modello, molto conservativo)
 
     Colonne output:
-        evento | carburante | v1_naive | v3_arima | v5_causalimpact | v6_glm_gamma
+        evento | carburante | v1_naive | v3_arima | v5_causalimpact | v7_theilsen
         | n_methods_available | n_h0_rejected | verdict | gain_mean_meur | gain_range_meur
     """
     rows_out = []
@@ -796,7 +796,7 @@ def plot_h0_heatmap(h0_df: pd.DataFrame, out_dir: Path, mode: str) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def print_sign_agreement(pivot_df: pd.DataFrame) -> None:
-    available = [m for m in ["v1_naive","v2_intermediate","v3_arima","v4_sarimax","v5_causalimpact","v6_glm_gamma"]
+    available = [m for m in ["v1_naive","v3_arima","v5_causalimpact","v7_theilsen"]
                  if m in pivot_df.columns]
     if len(available) < 2:
         return
@@ -843,7 +843,7 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     print("═"*70)
-    print(f"  02d_compare.py  –  Confronto 3 Metodi ITS  [mode={mode}]")
+    print(f"  02d_compare.py  –  Confronto 4 Metodi ITS  [mode={mode}]")
     if mode == "detected":
         print(f"  Variante detection: {detect_target}")
         print(f"  Legge da: {_OUT_BASE / 'detected' / detect_target}")
@@ -905,7 +905,7 @@ def main() -> None:
         print(f"  → CSV H₀ test: {h0_csv}")
 
     # ── Statistiche ───────────────────────────────────────────────────────────
-    available = [m for m in ["v1_naive","v2_intermediate","v3_arima","v4_sarimax","v5_causalimpact","v6_glm_gamma"]
+    available = [m for m in ["v1_naive","v3_arima","v5_causalimpact","v7_theilsen"]
                  if m in pivot_raw.columns]
     if len(available) >= 2:
         gains  = pivot_raw[available].values.astype(float)

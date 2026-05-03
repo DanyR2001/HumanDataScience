@@ -1,7 +1,0 @@
-﻿dimensione,categoria,chi2_fisher,p_combined,k_tests,reject_h0
-evento,Ucraina (Feb 2022),18.002,0.0012,2,True
-evento,Iran-Israele (Giu 2025),50.964,0.0,2,True
-evento,Hormuz (Feb 2026),0.005,1.0,2,False
-carburante,benzina,62.66,0.0,3,True
-carburante,gasolio,6.311,0.3893,3,False
-globale,tutti,68.971,0.0,6,True
